@@ -1,0 +1,773 @@
+<title>Solution Architecture - CF Retrieval Pipeline</title>
+<style>
+
+  :root {
+    --paper: #EEF1F0;
+    --card: #FFFFFF;
+    --ink: #12181F;
+    --ink-soft: #4A5560;
+    --ink-faint: #7C8790;
+    --line: #C7CED3;
+    --accent: #C4622D;
+    --accent-soft: #F3E2D6;
+    --tag-generic: #3B6E8F;
+    --tag-generic-soft: #E1EBF1;
+    --tag-diag: #6B7A3F;
+    --tag-diag-soft: #E9EDDE;
+    --tag-future: #8A8478;
+    --tag-future-soft: #F2F0EC;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Georgia", serif;
+    --sans: ui-sans-serif, "Avenir Next", "Segoe UI", system-ui, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  a { color: var(--accent); }
+
+  .page {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 56px 28px 96px;
+    display: flex;
+    flex-direction: column;
+    gap: 48px;
+  }
+
+  header {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    border-bottom: 1px solid var(--line);
+    padding-bottom: 28px;
+  }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+
+  h1 {
+    font-family: var(--serif);
+    font-weight: 500;
+    font-size: 34px;
+    line-height: 1.15;
+    margin: 0;
+    text-wrap: balance;
+    color: var(--ink);
+  }
+
+  .dek {
+    font-size: 15.5px;
+    color: var(--ink-soft);
+    max-width: 62ch;
+  }
+
+  .meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 18px;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--ink-faint);
+    margin-top: 4px;
+  }
+
+  .meta-row b { color: var(--ink-soft); font-weight: 600; }
+
+  .legend {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+  }
+
+  .legend-item {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 14px 14px 15px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .legend-item.is-future { border-style: dashed; }
+
+  .swatch {
+    width: 20px;
+    height: 20px;
+    border-radius: 4px;
+  }
+
+  .legend-item h3 {
+    font-family: var(--sans);
+    font-size: 13.5px;
+    font-weight: 700;
+    margin: 0;
+    color: var(--ink);
+  }
+
+  .legend-item p {
+    font-size: 12.5px;
+    color: var(--ink-soft);
+    margin: 0;
+    line-height: 1.4;
+  }
+
+  section.pipeline {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .section-heading {
+    font-family: var(--serif);
+    font-size: 21px;
+    font-weight: 500;
+    margin: 0 0 20px;
+    color: var(--ink);
+  }
+
+  .stage {
+    position: relative;
+    display: grid;
+    grid-template-columns: 56px 1fr;
+    gap: 0 20px;
+  }
+
+  .stage-spine {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .stage-num {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: var(--card);
+    border: 2px solid var(--accent);
+    color: var(--accent);
+    font-family: var(--mono);
+    font-weight: 700;
+    font-size: 15px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1;
+    flex-shrink: 0;
+  }
+
+  .stage-num.decimal {
+    width: 48px;
+    height: 48px;
+    font-size: 12.5px;
+    letter-spacing: -0.02em;
+  }
+
+  .step-group {
+    position: relative;
+    border: 1.5px dashed var(--tag-generic);
+    border-radius: 10px;
+    padding: 20px 18px 2px;
+    margin: 4px 0 10px;
+  }
+
+  .step-group-label {
+    position: absolute;
+    top: -11px;
+    left: 18px;
+    background: var(--paper);
+    padding: 0 8px;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--tag-generic);
+  }
+
+  .step-group .stage:last-of-type .stage-line {
+    display: none;
+  }
+
+  .stage-line {
+    width: 2px;
+    flex: 1;
+    background: var(--line);
+    margin: 2px 0;
+  }
+
+  .stage:last-of-type .stage-line { display: none; }
+
+  .stage-body {
+    padding-bottom: 28px;
+  }
+
+  .stage-card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 18px 20px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .stage-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .stage-title {
+    font-family: var(--serif);
+    font-size: 18px;
+    font-weight: 500;
+    color: var(--ink);
+  }
+
+  .tag {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 3px 9px;
+    border-radius: 100px;
+    white-space: nowrap;
+  }
+
+  .tag.generic { background: var(--tag-generic-soft); color: var(--tag-generic); }
+  .tag.algo    { background: var(--accent-soft); color: var(--accent); }
+  .tag.diag    { background: var(--tag-diag-soft); color: var(--tag-diag); }
+
+  .split-divider {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin: 4px 0;
+  }
+
+  .split-divider::before, .split-divider::after {
+    content: "";
+    flex: 1;
+    height: 2px;
+    background: var(--accent);
+  }
+
+  .split-divider span {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: 0.03em;
+    color: var(--accent);
+    white-space: nowrap;
+  }
+
+  .split-divider span code {
+    background: var(--accent-soft);
+    border-radius: 3px;
+    padding: 1px 5px;
+  }
+
+  .fork-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+  }
+
+  .fork-card {
+    background: var(--card);
+    border: 2px solid var(--accent);
+    border-radius: 6px;
+    padding: 16px 18px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+    position: relative;
+  }
+
+  .fork-badge {
+    position: absolute;
+    top: -13px;
+    left: 16px;
+    background: var(--accent);
+    color: #fff;
+    font-family: var(--mono);
+    font-weight: 700;
+    font-size: 12px;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .stage-desc {
+    font-size: 14.5px;
+    color: var(--ink-soft);
+    max-width: 66ch;
+  }
+
+  .stage-desc b { color: var(--ink); font-weight: 600; }
+
+  .stage-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink-faint);
+    padding-top: 6px;
+    border-top: 1px dashed var(--line);
+  }
+
+  .stage-meta code {
+    background: var(--paper);
+    border-radius: 3px;
+    padding: 1px 5px;
+    color: var(--ink-soft);
+  }
+
+  .stage-meta .metric { color: var(--accent); font-weight: 600; }
+
+  .future-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 14px;
+  }
+
+  .future-card {
+    background: var(--tag-future-soft);
+    border: 1.5px dashed var(--tag-future);
+    border-radius: 6px;
+    padding: 15px 16px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+  }
+
+  .future-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 10px;
+  }
+
+  .future-title {
+    font-family: var(--serif);
+    font-size: 15.5px;
+    font-weight: 500;
+    color: var(--ink);
+  }
+
+  .extends {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--tag-future);
+    white-space: nowrap;
+  }
+
+  .future-card p {
+    font-size: 13.5px;
+    color: var(--ink-soft);
+    margin: 0;
+  }
+
+  .metrics-wrap { overflow-x: auto; }
+
+  table.metrics {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 13.5px;
+    min-width: 560px;
+  }
+
+  table.metrics caption {
+    text-align: left;
+    font-family: var(--serif);
+    font-size: 16px;
+    color: var(--ink);
+    margin-bottom: 10px;
+    caption-side: top;
+  }
+
+  table.metrics th, table.metrics td {
+    text-align: left;
+    padding: 8px 14px 8px 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  table.metrics th {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    font-weight: 600;
+  }
+
+  table.metrics td.num {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--ink);
+  }
+
+  footer {
+    border-top: 1px solid var(--line);
+    padding-top: 20px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink-faint);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 24px;
+  }
+
+  @media (max-width: 640px) {
+    .legend { grid-template-columns: repeat(2, 1fr); }
+    .future-grid { grid-template-columns: 1fr; }
+    .stage { grid-template-columns: 40px 1fr; }
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .stage-card, .future-card { transition: border-color 0.15s ease; }
+  }
+
+</style>
+
+<div class="page">
+
+  <header>
+    <div class="eyebrow">Solution Architecture - Reference Diagram</div>
+    <h1>Collaborative-Filtering Retrieval Pipeline</h1>
+    <p class="dek">
+      The current steel thread: a pure-CF retrieval stage (ALS, benchmarked against a popularity floor) evaluated on MovieLens 100k under a structural cold-item split, isolating the effect an item's own accumulating history has on retrieval quality by fold-in (recalculate_item) rather than retraining - user preferences are fit once and held completely constant throughout. Two warm-up curves are built from this same fold-in mechanism: one from the standard user-to-item perspective, one from the transposed item-to-user (targeted-marketing) perspective. Built for comparing against interventions later on.
+    </p>
+    <div class="meta-row"><span><b>Models:</b> Popularity (5a) + Alternating Least Squares (5b)</span><span><b>Split:</b> 4.1 cold-item (25+ interactions eligible, 10% plain random) &rarr; 4.2 reference (independent, not a fold-in)</span><span><b>Reference-before-evaluation:</b> stage 6 runs ahead of stage 7, on purpose</span><span><b>Warm-up curves:</b> fold-in via recalculate_item, not retrained, 10 seeds, k=0..20; user-to-item (8) and item-to-user (9)</span><span><b>Dataset:</b> MovieLens 100k (proxy for Amazon Books)</span><span><b>Scope:</b> retrieval / candidate generation only</span><span><b>Source:</b> baseline_steel_thread_cf.py</span>
+    </div>
+  </header>
+
+  <section class="legend" aria-label="Tag taxonomy">
+    <div class="legend-item">
+      <div class="swatch" style="background: var(--tag-generic);"></div>
+      <h3>Shared / Generic</h3>
+      <p>Identical under any CF or hybrid variant - reused as-is by future interventions.</p>
+    </div>
+    <div class="legend-item">
+      <div class="swatch" style="background: var(--accent);"></div>
+      <h3>Algorithm-Specific</h3>
+      <p>The thing that actually changes when swapping in a content-based or other intervention.</p>
+    </div>
+    <div class="legend-item">
+      <div class="swatch" style="background: var(--tag-diag);"></div>
+      <h3>Diagnostic / Benchmark</h3>
+      <p>Not production - the comparison harness. Must stay identical across variants.</p>
+    </div>
+    <div class="legend-item is-future">
+      <div class="swatch" style="background: var(--card); border: 1.5px dashed var(--tag-future);"></div>
+      <h3>Future / Deferred</h3>
+      <p>Not built. An identified extension point on one or more numbered stages below.</p>
+    </div>
+  </section>
+
+  <section class="pipeline">
+    <h2 class="section-heading">Pipeline - execution order</h2>
+
+    <!-- Stage 1 -->
+    <div class="stage">
+      <div class="stage-spine"><div class="stage-num">1</div><div class="stage-line"></div></div>
+      <div class="stage-body">
+        <div class="stage-card">
+          <div class="stage-head">
+            <span class="stage-title">Raw Data Ingestion</span>
+            <span class="tag generic">Shared / Generic</span>
+          </div>
+          <p class="stage-desc">Loads the raw interaction records - <code>user_id, item_id, rating, timestamp</code> from MovieLens's <code>u.data</code>. The system's only external data dependency; everything downstream assumes this exists. A future intervention (content embeddings, LLM-simulated interactions) gains a sibling step here, not a replacement, since CF still needs raw interactions.</p>
+          <div class="stage-meta"><code>u.data</code><span>100,000 interactions</span><span>943 users</span><span>1,682 items</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Stage 2 -->
+    <div class="stage">
+      <div class="stage-spine"><div class="stage-num">2</div><div class="stage-line"></div></div>
+      <div class="stage-body">
+        <div class="stage-card">
+          <div class="stage-head">
+            <span class="stage-title">Identifier Normalization</span>
+            <span class="tag generic">Shared / Generic</span>
+          </div>
+          <p class="stage-desc">Maps raw user/item IDs to contiguous zero-based integers, plus a reverse lookup for readable output. Required because sparse-matrix math needs dense integer addressing. This is also the exact join key a content-feature table would align to under a future content-based intervention - the seam where the two approaches connect.</p>
+          <div class="stage-meta"><code>user_index</code><code>item_index</code><code>index_to_user / index_to_item</code></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Stage 3 -->
+    <div class="stage">
+      <div class="stage-spine"><div class="stage-num">3</div><div class="stage-line"></div></div>
+      <div class="stage-body">
+        <div class="stage-card">
+          <div class="stage-head">
+            <span class="stage-title">Sparse Interaction Matrix Construction</span>
+            <span class="tag generic">Shared / Generic</span>
+          </div>
+          <p class="stage-desc">Assembles (user, item) pairs into a <b>binary</b> CSR sparse user&times;item matrix - any rating counts as an interaction, no weighting. Matches exactly what 5b reads downstream. Confidence-weighted interactions are a deliberately deferred extension, not used here.</p>
+          <div class="stage-meta"><code>user_item</code><span>6.30% density</span><span class="metric">100,000 non-zeros</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="step-group">
+      <div class="step-group-label">Step 4 - split, in two independent parts</div>
+      
+    <!-- Stage 4.1 -->
+    <div class="stage">
+      <div class="stage-spine"><div class="stage-num decimal">4.1</div><div class="stage-line"></div></div>
+      <div class="stage-body">
+        <div class="stage-card">
+          <div class="stage-head">
+            <span class="stage-title">Cold-Item Split</span>
+            <span class="tag generic">Shared / Generic</span>
+          </div>
+          <p class="stage-desc">A fixed population of items plays the role of "cold" throughout this notebook. <b>Eligibility:</b> only items with at least 25 total interactions qualify - this guarantees every candidate can supply a full <code>k=0..20</code> reveal sweep without running out of history partway through. <b>Selection:</b> 10% of the eligible population is sampled <i>uniformly at random</i> (no stratification by popularity tier). <b>Reveal and reserve, per cold item:</b> sort its interactions chronologically; the first 20 are the revealable pool (exactly <code>k</code> of these are treated as known history at reveal level <code>k</code>); everything after position 20 is permanently reserved for evaluation, unchanged at every <code>k</code>. This keeps the evaluated population perfectly stable across the whole sweep - only the amount of revealed history changes. This same reveal mechanism is called repeatedly by stages 8 and 9. The plain-random draw turned out to make no promise about how homogeneous the resulting population's difficulty would be - reserved-test-user counts range from 5 to 487 across these 87 items, which stage 9 has to account for directly.</p>
+          <div class="stage-meta"><code>MIN_INTERACTIONS=25</code><span>872 / 1,682 items eligible</span><span>87 cold items (10%, plain random)</span><span class="metric">7,372 reserved test interactions (5-487 per item, mean 84.7)</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Stage 4.2 -->
+    <div class="stage">
+      <div class="stage-spine"><div class="stage-num decimal">4.2</div><div class="stage-line"></div></div>
+      <div class="stage-body">
+        <div class="stage-card">
+          <div class="stage-head">
+            <span class="stage-title">Reference Set</span>
+            <span class="tag generic">Shared / Generic</span>
+          </div>
+          <p class="stage-desc"><b>Independent, not a fold-in.</b> A plain <b>random</b> 80/20 split on the warm items only (everything 4.1 did not select as cold) - no reveal levels, no fold-in, no sweep. It's a reference, not a comparison: it exists purely to answer "what does normal performance look like" for stages 6/7/8 to be read against, so plotting a warm-up curve for an already-warm item would answer no question worth asking here.</p>
+          <div class="stage-meta"><code>train_test_split()</code><span>1,595 warm items only</span><span class="metric">72,833 train / 18,055 test</span></div>
+        </div>
+      </div>
+    </div>
+    </div>
+
+    <div class="split-divider"><span>&#9660; stage 5 forks - order between 5a / 5b is arbitrary</span></div>
+    <div class="fork-row">
+      <div class="fork-card">
+        <div class="fork-badge">5a</div>
+        <div class="stage-head">
+          <span class="stage-title">Popularity Baseline</span>
+          <span class="tag generic">Shared / Generic</span>
+        </div>
+        <p class="stage-desc">Ranks items by raw training-interaction count - the same global list for every user, personalized only by excluding each user's already-seen items. No factors, no training loop, no hyperparameters, no notion of individual user preference at all - exactly why it's the right floor for this comparison. Built identically regardless of which algorithm occupies 5b; exists to answer "is 5b earning its complexity." Also the conceptual template for stage 9's user-activity floor - "rank by observed volume, no personalization" applied to the opposite axis.</p>
+        <div class="stage-meta"><code>PopularityModel</code><span>no training</span><span class="metric">top item: 482 interactions</span></div>
+      </div>
+      <div class="fork-card">
+        <div class="fork-badge">5b</div>
+        <div class="stage-head">
+          <span class="stage-title">Collaborative Filtering - ALS</span>
+          <span class="tag algo">Algorithm-Specific</span>
+        </div>
+        <p class="stage-desc">Learns latent user/item factor vectors by alternately solving, in closed form, for all user factors with item factors fixed, then all item factors with user factors fixed. <b>The reason ALS - not BPR - is the algorithm here:</b> that alternating structure gives <code>recalculate_item(itemid, item_users)</code> natively - an exact closed-form solve for <i>one item's</i> factor, holding every user's factor completely untouched. BPR's joint stochastic optimization has no equivalently clean "hold one side fixed" operation, so a full retrain would let user factors drift along with the item's, confounding the exact thing this experiment isolates. <b>The primary swap point</b> in this diagram for future interventions (content embeddings, a content-blended model, LLM-simulated interactions).</p>
+        <div class="stage-meta"><code>AlternatingLeastSquares</code><span>factors=50</span><span>regularization=0.01</span><span>iterations=15</span><code>recalculate_item()</code></div>
+      </div>
+    </div>
+    <div class="split-divider"><span>&#9650; merges - both expose the same <code>model.recommend()</code> interface</span></div>
+
+    <!-- Stage 6 -->
+    <div class="stage">
+      <div class="stage-spine"><div class="stage-num">6</div><div class="stage-line"></div></div>
+      <div class="stage-body">
+        <div class="stage-card">
+          <div class="stage-head">
+            <span class="stage-title">Warm-Item Reference Score</span>
+            <span class="tag diag">Diagnostic / Benchmark</span>
+          </div>
+          <p class="stage-desc">Computed <b>ahead of</b> stage 7's cold-start evaluation, on purpose: reading stage 7's near-zero numbers with no frame of reference tells you little. Both models are evaluated on 4.2's held-out split, using each model's own natively-fit representations - no fold-in involved, that mechanism exists specifically for the cold-item sweeps. Fit here as <code>N_SEEDS=10</code> independent ALS fits (factor initialization is random), reporting mean &plusmn; spread; these exact same 10 fits are reused, unchanged, by stages 7, 8, and 9, so every downstream stage rests on the same underlying models rather than independently-drawn samples. This is also where the shared evaluation helpers get defined, including <b>AUC</b> - a full-catalog pairwise ranking metric (Mann-Whitney rank-sum form) that needs no <code>K</code> at all, included specifically because every other metric here needed a debatable choice of <code>K</code>.</p>
+          <div class="stage-meta"><span class="metric">NDCG@100 - Pop 0.2975 / ALS 0.4635 ± 0.0018</span><span class="metric">Recall@100 - Pop 0.4503 / ALS 0.6524 ± 0.0021</span><span class="metric">HitRate@100 - Pop 0.9576 / ALS 0.9897 ± 0.0013</span><span class="metric">AUC (no K) - Pop 0.8717 / ALS 0.8840 ± 0.0010</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Stage 7 -->
+    <div class="stage">
+      <div class="stage-spine"><div class="stage-num">7</div><div class="stage-line"></div></div>
+      <div class="stage-body">
+        <div class="stage-card">
+          <div class="stage-head">
+            <span class="stage-title">Cold Start Retrieval Evaluation</span>
+            <span class="tag diag">Diagnostic / Benchmark</span>
+          </div>
+          <p class="stage-desc">Every reserved test interaction (stage 4.1) belongs to a cold item, evaluated at reveal level <code>k=0</code> - no history revealed at all. For 5b, this has an exact, provable answer, verified computationally rather than merely observed to be small: with zero observed interactions, <code>recalculate_item</code>'s regularized closed-form solve collapses to the <i>exact zero vector</i>, every time, for every seed - a zero vector's dot product with any user factor is exactly zero, so the item cannot outrank anything on NDCG/Recall/HitRate@100, all exactly 0.0000. Popularity's <code>k=0</code> failure is a separate, structural guarantee: a cold item's training-interaction count is exactly zero, so it can never appear in a popularity ordering regardless of training dynamics. <b>AUC is the exception</b> - a zero-factor item still lands <i>somewhere</i> in the full-catalog ranking, just slightly below chance (0.4213, not 0.5000), since the median real item score sits just above zero. Read alongside stage 6's reference score, computed just before this.</p>
+          <div class="stage-meta"><span class="metric">NDCG@100 - Pop 0.0000 / ALS 0.0000 ± 0.0000</span><span class="metric">Recall@100 - Pop 0.0000 / ALS 0.0000 ± 0.0000</span><span class="metric">HitRate@100 - Pop 0.0000 / ALS 0.0000 ± 0.0000</span><span class="metric">AUC - Pop 0.0328 / ALS 0.4213 ± 0.0009</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Stage 8 -->
+    <div class="stage">
+      <div class="stage-spine"><div class="stage-num">8</div><div class="stage-line"></div></div>
+      <div class="stage-body">
+        <div class="stage-card">
+          <div class="stage-head">
+            <span class="stage-title">Warm-Up Curve - User-to-Item (Mode A)</span>
+            <span class="tag diag">Diagnostic / Benchmark</span>
+          </div>
+          <p class="stage-desc">The standard consumer-facing question: for a given user, does a cold item surface in <i>their</i> top-K as it accumulates its own history? Built by <b>fold-in, not retraining.</b> For each <code>k</code> in the <code>0..20</code> sweep, computes 5b's fold-in factor for every cold item using exactly the first <code>k</code> of its own revealed interactions via <code>recalculate_item</code>, evaluates against the same fixed reserved test set throughout, and repeats this across the 10 models fit in stage 6 - it does not refit or re-invoke stage 5 at any point on the curve. <code>K=100</code>, not a stricter cutoff: a cold item competing against ~1,600 fully-trained warm items for one of only 10 slots never wins that competition anywhere in the sweep, for any user - the resulting curve is a flat, uninformative zero end to end at <code>K=10</code>. At <code>K=100</code> a real, growing signal appears on NDCG/Recall/HitRate. AUC (no <code>K</code>) adds a subtler read: ALS stays ahead of Popularity throughout, but the <i>gap</i> shrinks from 0.39 at k=0 to 0.12 at k=20, not widens - Popularity's climb from an extreme structural disadvantage closes distance faster in relative terms than ALS's climb, which is real but flattening.</p>
+          <div class="stage-meta"><span class="metric">k=20 HitRate@100 - Pop 0.0000 / ALS 0.1071 (mean of 10)</span><span class="metric">k=20 AUC - Pop 0.5339 / ALS 0.6495 (gap 0.12, down from 0.39 at k=0)</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Stage 9 -->
+    <div class="stage">
+      <div class="stage-spine"><div class="stage-num">9</div><div class="stage-line"></div></div>
+      <div class="stage-body">
+        <div class="stage-card">
+          <div class="stage-head">
+            <span class="stage-title">Warm-Up Curve - Item-to-User (Mode B)</span>
+            <span class="tag diag">Diagnostic / Benchmark</span>
+          </div>
+          <p class="stage-desc">The targeted-marketing question, the transposed dual of stage 8: for a single cold item, rank <i>users</i> by predicted affinity, and check whether the users known (from the reserved test set) to actually want it land near the top of <i>its</i> top-K. Same fold-in factors as 8, same frozen-user-factor principle, just the ranking axis transposed - no new fitting. 5a has no meaningful version of this (no per-user signal to rank users by, only a tie), so it's compared against its direct dual instead: a frozen <b>global-user-activity</b> ranking (each user's total interaction count in 4.2's train split). Uses its own <code>K_MODE_B=10</code>, not stage 6's <code>K=100</code>, since ~940 candidate users is a much smaller pool than ~1,600 items and a large K there saturates HitRate for both models alike. <b>Precision@K</b> is reported alongside Recall@K since the two are capped in opposite directions by each item's reserved-test-user count <code>r_i</code> (5 to 487) - a real cross-item comparability problem NDCG@K and AUC don't have. The <b>Downsampled Test Set</b> (a fixed, random 5-user sample per item - every eligible item is guaranteed at least 5 by construction, <code>MIN_INTERACTIONS(25) - N_REVEAL(20) = 5</code>) fixes that comparability problem for NDCG/Precision/Recall/HitRate; AUC keeps the full reserved test set throughout, since its ceiling is trivially 1.0 regardless of <code>r_i</code>. The two populations tell genuinely different stories: on the fairness-controlled downsampled metrics, 5b <b>overtakes</b> the activity floor around <code>k&asymp;11-15</code>; on the full-population AUC, 5b still trails at <code>k=20</code> - localizing the remaining gap to the high-<code>r_i</code>, near-popular items specifically, not the cold-item population as a whole.</p>
+          <div class="stage-meta"><span class="metric">k=20 HitRate@10 (n=5/item) - Activity 0.2989 / ALS 0.3839</span><span class="metric">k=20 AUC (full set) - Activity 0.7990 / ALS 0.7493</span><span class="metric">ceilings @K=10 - NDCG/Recall/HitRate/AUC 1.0000, Precision 0.5000</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="metrics-wrap">
+
+    <table class="metrics">
+      <caption>Cold-item population (stage 4.1) - 25+ interaction eligibility, plain random 10%</caption>
+      <thead>
+        <tr><th>Metric</th><th>Value</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Eligible items (≥25 interactions)</td><td class="num">872 / 1,682 (51.8%)</td></tr>
+<tr><td>Cold items selected</td><td class="num">87 (10.0% of eligible)</td></tr>
+<tr><td>Reserved test interactions</td><td class="num">7,372 total</td></tr>
+<tr><td>Reserved per item - min / median / mean / max</td><td class="num">5 / 57 / 84.7 / 487</td></tr>
+      </tbody>
+    </table>
+    <p style="font-size:12.5px;color:var(--ink-faint);margin-top:8px;">
+      That min/median/mean/max spread is exactly what motivated stage 9's Downsampled Test Set - a plain random 10% draw makes no promise about how homogeneous the resulting population's difficulty will be.
+    </p>
+
+    <table class="metrics" style="margin-top:22px;">
+      <caption>Warm-item reference (stage 6) - random 80/20 split, 1,595 warm items, 72,833 train / 18,055 test, 943 eval users</caption>
+      <thead>
+        <tr><th>Metric</th><th>Popularity</th><th>ALS (mean of 10 seeds)</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>NDCG@100</td><td class="num">0.2975</td><td class="num">0.4635 ± 0.0018</td></tr>
+<tr><td>Recall@100</td><td class="num">0.4503</td><td class="num">0.6524 ± 0.0021</td></tr>
+<tr><td>HitRate@100</td><td class="num">0.9576</td><td class="num">0.9897 ± 0.0013</td></tr>
+<tr><td>AUC (no K)</td><td class="num">0.8717</td><td class="num">0.8840 ± 0.0010</td></tr>
+      </tbody>
+    </table>
+    <p style="font-size:12.5px;color:var(--ink-faint);margin-top:8px;">
+      This is the ceiling stage 8's curve is climbing toward, not a value it should ever exceed - computed on warm items only, cold items held at strict k=0.
+    </p>
+
+    <table class="metrics" style="margin-top:22px;">
+      <caption>Warm-up curve, user-to-item (stage 8) - K=100, 860 eval users</caption>
+      <thead>
+        <tr><th>k</th><th>NDCG@100 (Pop / ALS)</th><th>Recall@100 (Pop / ALS)</th><th>HitRate@100 (Pop / ALS)</th><th>AUC (Pop / ALS)</th></tr>
+      </thead>
+      <tbody>
+        <tr><td class="num">0</td><td class="num">0.0000 / 0.0000</td><td class="num">0.0000 / 0.0000</td><td class="num">0.0000 / 0.0000</td><td class="num">0.0328 / 0.4213</td></tr>
+<tr><td class="num">5</td><td class="num">0.0000 / 0.0000</td><td class="num">0.0000 / 0.0000</td><td class="num">0.0000 / 0.0000</td><td class="num">0.2855 / 0.4989</td></tr>
+<tr><td class="num">10</td><td class="num">0.0000 / 0.0015</td><td class="num">0.0000 / 0.0068</td><td class="num">0.0000 / 0.0134</td><td class="num">0.4044 / 0.5574</td></tr>
+<tr><td class="num">15</td><td class="num">0.0000 / 0.0037</td><td class="num">0.0000 / 0.0156</td><td class="num">0.0000 / 0.0447</td><td class="num">0.4817 / 0.6068</td></tr>
+<tr><td class="num">20</td><td class="num">0.0000 / 0.0089</td><td class="num">0.0000 / 0.0359</td><td class="num">0.0000 / 0.1071</td><td class="num">0.5339 / 0.6495</td></tr>
+      </tbody>
+    </table>
+    <p style="font-size:12.5px;color:var(--ink-faint);margin-top:8px;">
+      Popularity never recovers on NDCG/Recall/HitRate across the full tested range - cracking a global top-100 needs far more than 20 interactions (5a's top item: 482). AUC tells a subtler story: ALS stays ahead of Popularity throughout, but the <i>gap</i> shrinks from 0.39 at k=0 to 0.12 at k=20, not widens - Popularity's climb from an extreme structural disadvantage (zero count) closes distance faster in relative terms than ALS's climb, which is real but flattening (diminishing marginal gain per revealed interaction, consistent with a regularized least-squares solve converging asymptotically).
+    </p>
+
+    <table class="metrics" style="margin-top:22px;">
+      <caption>Warm-up curve, item-to-user (stage 9) - K_MODE_B=10, Downsampled Test Set (n=5/item) for NDCG/Precision/Recall/HitRate; full test set for AUC</caption>
+      <thead>
+        <tr><th>k</th><th>NDCG (ALS / Activity)</th><th>Precision (ALS / Activity)</th><th>Recall (ALS / Activity)</th><th>HitRate (ALS / Activity)</th><th>AUC, full set (ALS / Activity)</th></tr>
+      </thead>
+      <tbody>
+        <tr><td class="num">0</td><td class="num">0.0082 / 0.0681</td><td class="num">0.0046 / 0.0379</td><td class="num">0.0092 / 0.0759</td><td class="num">0.0460 / 0.2989</td><td class="num">0.5000 / 0.7926</td></tr>
+<tr><td class="num">10</td><td class="num">0.0528 / 0.0684</td><td class="num">0.0308 / 0.0379</td><td class="num">0.0616 / 0.0759</td><td class="num">0.2862 / 0.2989</td><td class="num">0.6836 / 0.7959</td></tr>
+<tr><td class="num">15</td><td class="num">0.0627 / 0.0687</td><td class="num">0.0383 / 0.0379</td><td class="num">0.0766 / 0.0759</td><td class="num">0.3471 / 0.2989</td><td class="num">0.7146 / 0.7974</td></tr>
+<tr><td class="num">20</td><td class="num">0.0722 / 0.0707</td><td class="num">0.0428 / 0.0379</td><td class="num">0.0855 / 0.0759</td><td class="num">0.3839 / 0.2989</td><td class="num">0.7493 / 0.7990</td></tr>
+<tr><td class="num">ceiling</td><td class="num">1.0000</td><td class="num">0.5000</td><td class="num">1.0000</td><td class="num">1.0000</td><td class="num">1.0000</td></tr>
+      </tbody>
+    </table>
+    <p style="font-size:12.5px;color:var(--ink-faint);margin-top:8px;">
+      ALS crosses over and overtakes the activity floor on all four downsampled metrics between k&asymp;11 and k&asymp;15, and keeps widening the lead through k=20. AUC (full test set, every r_i from 5 to 487 included) still shows ALS trailing at k=20 - the remaining gap is concentrated in the high-r_i, near-popular items specifically, where "target the generally active users" is close to unbeatable by construction, not spread evenly across the cold-item population.
+    </p>
+  </section>
+
+  <section>
+    <h2 class="section-heading">Extension points - deferred, not built</h2>
+    <div class="future-grid">
+      <div class="future-card">
+        <div class="future-head">
+          <span class="future-title">Confidence-Weighted Interactions</span>
+          <span class="extends">extends &rarr; 3</span>
+        </div>
+        <p><code>confidence = 1 + &alpha;&middot;rating</code> (Hu et al. 2008). ALS reads interaction magnitude natively, so this would be a direct extension of the current interaction matrix - not used here, every interaction counts equally regardless of rating.</p>
+      </div>
+      <div class="future-card">
+        <div class="future-head">
+          <span class="future-title">Positive-Only Filtering</span>
+          <span class="extends">extends &rarr; 3</span>
+        </div>
+        <p>Exclude low ratings (e.g. &lt;3 stars) from the interaction set entirely, rather than including them at low weight. Addresses "1-star &ne; dislike."</p>
+      </div>
+      <div class="future-card">
+        <div class="future-head">
+          <span class="future-title">Time-Based Split</span>
+          <span class="extends">extends &rarr; 4.1</span>
+        </div>
+        <p>Not the same thing as stage 4.1's chronological <i>reveal</i> - that orders each cold item's own interactions internally, but every warm item still trains on 100% of its history regardless of date. A true time-based split would draw one global cutoff T across the whole dataset (train on everything before T, test after), so "cold" means "didn't exist in the catalog yet," not "deliberately withheld." A realism upgrade, not a correctness fix - stage 4.1 already guarantees structural coldness without it.</p>
+      </div>
+      <div class="future-card">
+        <div class="future-head">
+          <span class="future-title">Content Embeddings + LLM-Simulated Interactions</span>
+          <span class="extends">extends &rarr; 1, 5b</span>
+        </div>
+        <p>How content embeddings, improved content embeddings, and LLM-simulated interactions enter this same fold-in mechanism is an open design question - not yet designed. 5a stays as-is: the floor doesn't change just because the item representation being measured against it does.</p>
+      </div>
+      <div class="future-card">
+        <div class="future-head">
+          <span class="future-title">Cold-Item Selection Ceiling</span>
+          <span class="extends">extends &rarr; 4.1</span>
+        </div>
+        <p>The r_i skew (5 to 487 reserved users/item) that motivated stage 9's Downsampled Test Set was discovered via diagnostics, not designed around at selection time. A symmetric <code>MAX_INTERACTIONS</code> ceiling alongside the existing floor - narrowing the eligible population itself rather than fixing it downstream - was considered and not yet implemented; the Downsampled Test Set is a complementary fix for the K-based metrics, not a substitute for addressing the underlying population choice.</p>
+      </div>
+      <div class="future-card">
+        <div class="future-head">
+          <span class="future-title">Cold-User Split</span>
+          <span class="extends">extends &rarr; 4.1, 8</span>
+        </div>
+        <p>The row-based mirror of stages 4.1 and 8 together - the same eligibility-filter-then-random-sample selection over users instead of items, entire users held out, then the same chronological-reveal-plus-fold-in treatment to build a true user warm-up curve. A related but distinct cold-start problem; the machinery to build it now already exists, just needs pointing at the other axis.</p>
+      </div>
+    </div>
+  </section>
+
+  <footer><span>baseline_steel_thread_cf.py</span><span>implicit 0.7.3</span><span>MovieLens 100k</span><span>699 Capstone</span>
+  </footer>
+
+</div>
