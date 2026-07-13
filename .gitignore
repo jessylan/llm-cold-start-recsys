@@ -1,0 +1,22 @@
+# Jupyter notebook checkpoints
+.ipynb_checkpoints/
+
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Generated files (keep the folder, ignore its contents)
+outputs/*
+!outputs/.gitkeep
+
+# Raw data (large files, keep the folders, ignore their contents)
+data/raw/movies/*
+data/raw/books/*
+!data/raw/movies/.gitkeep
+!data/raw/books/.gitkeep
+
+# OS / editor temporary files
+Thumbs.db
+.DS_Store
+*.tmp
+~$*
