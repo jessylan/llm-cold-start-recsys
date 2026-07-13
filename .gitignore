@@ -1,0 +1,4 @@
+# gitignore for MacOS DS_Store 
+.DS_Store
+.DS_Store?
+._*
