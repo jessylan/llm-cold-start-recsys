@@ -5,20 +5,22 @@
 __pycache__/
 *.py[cod]
 
-# Generated files (keep the folder, ignore its contents)
+# Generated files (keep the folder and collaboration samples)
 outputs/*
 !outputs/.gitkeep
 !outputs/clean_sample.csv
 !outputs/load_sample.csv
 
-# Raw data (large files, keep the folders, ignore their contents)
+# Raw data (large files, keep the folders)
 data/raw/movies/*
 data/raw/books/*
 !data/raw/movies/.gitkeep
 !data/raw/books/.gitkeep
 
-# OS / editor temporary files
+# OS and editor temporary files
 Thumbs.db
 .DS_Store
+.DS_Store?
+._*
 *.tmp
 ~$*

@@ -1,0 +1,33 @@
+# =============================================================================
+# 699 Capstone — Baseline "Steel Thread": Collaborative Filtering (ALS, fold-in)
+# -----------------------------------------------------------------------------
+# Environment:  Python 3.12 venv  ->  ~/venvs/699-baseline-steel-thread
+# Platform:     Apple Silicon (arm64), macOS.  All pins below ship prebuilt
+#               arm64 wheels, so `uv pip install` needs no compiler / source build.
+#
+# Recreate from scratch:
+#   uv venv ~/venvs/699-baseline-steel-thread --python 3.12
+#   uv pip install --python ~/venvs/699-baseline-steel-thread/bin/python -r requirements.txt
+#   ~/venvs/699-baseline-steel-thread/bin/python -m ipykernel install --user \
+#       --name 699-baseline-steel-thread \
+#       --display-name "Python (699-baseline-steel-thread)"
+#
+# Versions are pinned (==) to what was resolved on 2026-07-06 for reproducibility;
+# reconfirmed unchanged on 2026-07-12 after the BPR -> ALS rebuild (no new
+# dependencies were introduced, only how the existing ones are used).
+# =============================================================================
+
+# --- Core recommender stack --------------------------------------------------
+implicit==0.7.3        # ALS (fold-in via recalculate_item) + ranking metrics (NDCG). CPU-only on Mac.
+numpy==2.5.1           # Array backbone. Pinned: implicit/scipy/pandas ABI must agree.
+scipy==1.18.0          # Sparse matrices (csr_matrix) for the user x item interactions.
+pandas==3.0.3          # Load MovieLens u.data; map raw IDs -> contiguous integer indices.
+tqdm==4.68.3           # Progress bars used internally by implicit's fit / evaluation.
+threadpoolctl==3.6.0   # Controls BLAS thread count; keeps implicit's OpenBLAS well-behaved.
+matplotlib==3.11.0     # Warm-up curve plot (Section 9).
+
+# --- Notebook runtime --------------------------------------------------------
+ipykernel==7.3.0       # Registers this venv as a selectable Jupyter kernel.
+jupyterlab==4.6.1      # Local notebook UI. Drop this line if you launch from VS Code/another host.
+ipywidgets==8.1.8      # Live tqdm progress bars in the notebook (silences the IProgress warning).
+jupytext==1.19.4       # Pairs baseline_steel_thread_cf.py (source of truth) <-> .ipynb; `jupytext --sync`.
