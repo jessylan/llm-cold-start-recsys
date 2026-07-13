@@ -8,6 +8,8 @@ __pycache__/
 # Generated files (keep the folder, ignore its contents)
 outputs/*
 !outputs/.gitkeep
+!outputs/clean_sample.csv
+!outputs/load_sample.csv
 
 # Raw data (large files, keep the folders, ignore their contents)
 data/raw/movies/*
