@@ -1,27 +1,23 @@
-# Netflix Cold Start — Data Preparation
+# Cold-Start Recommender — Data Preparation
 
 Capstone project ("Team Cold Start"): data preparation for a generative recommendation
 system focused on the **cold-start problem** — recommending items to new users and
 recommending new items that have little or no interaction history.
 
-> **Note on naming:** the project is called "netflix-cold-start", but the raw data is the
-> **Amazon Reviews 2023** dataset (McAuley Lab): the official 5-core **Books** and
-> **Movies_and_TV** ratings files plus the Movies_and_TV metadata file. The team's earlier
-> data summary (`Codex/2026-07-09/data/processed/data_summary.md`) confirms this. There is
-> no separate Netflix dataset in this project.
+> **Dataset:** the raw data is the **Amazon Reviews 2023** dataset (McAuley Lab): the
+> official 5-core **Books** and **Movies_and_TV** ratings files plus the Movies_and_TV
+> metadata file. Raw files are not committed to this repo (they are ~500 MB) — see the
+> folder structure below for where to place them after cloning.
 
 ## Folder structure
 
 ```
-netflix-cold-start/
+llm-cold-start-recsys/
 ├── README.md
 ├── .gitignore
-├── netflix-cold-start.code-workspace
 ├── notebooks/
 │   ├── data_cleaning.ipynb                 <- run first: load + clean, saves cleaned tables
-│   ├── train_test_split.ipynb              <- run second: splits + leakage checks
-│   └── archive/
-│       └── cold_start_data_prep_original.ipynb   <- untouched backup, do not edit
+│   └── train_test_split.ipynb              <- run second: splits + leakage checks
 ├── data/
 │   └── raw/
 │       ├── movies/
@@ -34,8 +30,7 @@ netflix-cold-start/
 
 ## How to run (VS Code)
 
-1. Open `netflix-cold-start.code-workspace` in Visual Studio Code
-   (File → Open Workspace from File…).
+1. Open the project folder in Visual Studio Code (File → Open Folder…).
 2. Open `notebooks/data_cleaning.ipynb` and run it top to bottom. It loads and cleans
    the raw data and saves `processed_items.csv` / `processed_interactions.csv` to `outputs/`.
 3. Then open `notebooks/train_test_split.ipynb` and run it top to bottom. It loads the
@@ -48,8 +43,8 @@ netflix-cold-start/
 
 ## Data
 
-- Raw movie inputs live in `data/raw/movies/`, raw book inputs in `data/raw/books/`.
-  These are copies; the originals remain in `C:\Users\Seema\Documents\Codex\2026-07-09\data\raw\`.
+- Raw movie inputs live in `data/raw/movies/`, raw book inputs in `data/raw/books/`
+  (kept out of version control; put the three files listed above in those folders).
 - Files are gzip-compressed; pandas reads them directly, no unzipping needed.
 - The ratings files are large (9.5M book rows, 7.4M movie rows) — loading and cleaning
   the full data takes several minutes.
