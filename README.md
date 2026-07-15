@@ -52,7 +52,8 @@ Raw Amazon data
 |   `-- train_test_split.ipynb
 |-- outputs/
 |   |-- clean_sample.csv
-|   `-- load_sample.csv
+|   |-- load_sample.csv
+|   `-- metadata_sample.csv
 |-- .gitignore
 `-- README.md
 ```
@@ -66,13 +67,28 @@ Raw Amazon data
 | `meta_Movies_and_TV.jsonl.gz` | Movie and TV metadata |
 | `clean.csv` | Full cleaned interactions (local/shared storage) |
 | `load.csv` | Full modeling dataset (local/shared storage) |
+| `metadata.csv` | Full unified item table: movie metadata + book ID stubs (local/shared storage) |
 | `clean_sample.csv` | Git-friendly sample of cleaned interactions |
 | `load_sample.csv` | Git-friendly sample with split labels |
+| `metadata_sample.csv` | Git-friendly sample of the item table (see limitation below) |
 
 Raw data and full generated outputs are excluded from Git because they are large. The
-two sample CSVs are committed so collaborators can test the workflow immediately. The
-sample contains 100,000 rows: 10,000 movie and 10,000 book rows from each standard and
-cold-start split.
+sample CSVs are committed so collaborators can test the workflow and inspect the
+schema immediately. `clean_sample.csv`/`load_sample.csv` contain 100,000 rows: 10,000
+movie and 10,000 book rows from each standard and cold-start split. `metadata_sample.csv`
+is a 100,000-row random sample of `metadata.csv`.
+
+### Known limitation: books have no metadata yet
+
+`metadata.csv`/`metadata_sample.csv` only have real `title`/`genre`/`description` for
+**movies**, pulled from `meta_Movies_and_TV.jsonl.gz`. Book rows are blank stubs (one
+per rated `parent_asin` in `Books.csv.gz`) because **no book metadata file is in the
+pipeline yet**. The official book metadata file, `meta_Books.jsonl.gz`, exists but is
+4.9 GB compressed (vs. 271 MB for movies) and hasn't been downloaded or wired in. Until
+that happens, books have no title/genre/description for content-based features.
+
+`genre` and `description` are `" | "`-joined plain text, flattened from the raw JSON
+arrays Amazon's schema stores them as (not a Python list's string repr).
 
 ## Design documents
 
@@ -87,3 +103,13 @@ extreme-baseline design work.
   space and processing time.
 - Confirm notebook column mappings before running the pipeline with a different schema.
 - Keep the split labels unchanged so evaluation remains consistent across the project.
+- **Notebook/output naming is out of sync.** As committed, `data_cleaning.ipynb` saves
+  `processed_items.csv` / `processed_interactions.csv`, and `train_test_split.ipynb`
+  saves `train_interactions.csv`, `validation_interactions.csv`, etc. — not the
+  `clean.csv` / `load.csv` names currently in `outputs/`. Those came from an
+  uncommitted local run. Running the notebooks fresh today will not reproduce
+  `clean.csv` / `load.csv` under those names; reconcile before the next full run.
+- `metadata.csv` / `metadata_sample.csv` were generated the same way `clean.csv` /
+  `load.csv` were (a local script mirroring the notebook's item-table logic), not by
+  running `data_cleaning.ipynb` directly, since it doesn't save the item table under
+  that filename either.
