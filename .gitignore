@@ -10,6 +10,7 @@ outputs/*
 !outputs/.gitkeep
 !outputs/clean_sample.csv
 !outputs/load_sample.csv
+!outputs/metadata_sample.csv
 
 # Raw data (large files, keep the folders)
 data/raw/movies/*
