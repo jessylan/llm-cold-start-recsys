@@ -16,9 +16,10 @@ It cleans and combines ratings, then creates standard and cold-start evaluation 
    ```
 
 2. Place the raw files in the locations shown under **Project structure**.
-3. Run `notebooks/data_cleaning.ipynb`.
-4. Run `notebooks/train_test_split.ipynb`.
-5. Use `outputs/load_sample.csv` for shared development and testing. Use the full
+3. Run `notebooks/data_filtering.ipynb`. 
+4. Run `notebooks/data_cleaning.ipynb`. # NOTE - may need rework after adding `data_filtering.ipynb` - to be addressed soon
+5. Run `notebooks/train_test_split.ipynb`. # NOTE - may need rework after adding `data_filtering.ipynb` - to be addressed soon
+6. Use `outputs/load_sample.csv` for shared development and testing. Use the full
    `outputs/load.csv` only for full-scale local runs.
 
 The notebooks use project-relative paths and can be run from VS Code or Jupyter.
@@ -45,10 +46,13 @@ Raw Amazon data
 ```text
 .
 |-- data/raw/                         # local raw data (not committed)
+|-- data/filtered/                    # local filtered data (not committed)
+|-- data/cache/                       # local cache data (not committed)
 |-- design_documents/
 |   `-- initial_pipeline_design/      # baseline and architecture artifacts
 |-- notebooks/
 |   |-- data_cleaning.ipynb
+|   |-- data_filtering.ipynb          # filtering reviews datasets and metadata as well
 |   `-- train_test_split.ipynb
 |-- outputs/
 |   |-- clean_sample.csv
@@ -60,17 +64,25 @@ Raw Amazon data
 
 ## Data and outputs
 
-| File | Purpose |
-|---|---|
-| `Books.csv.gz` | Book ratings |
-| `Movies_and_TV.csv.gz` | Movie and TV ratings |
-| `meta_Movies_and_TV.jsonl.gz` | Movie and TV metadata |
-| `clean.csv` | Full cleaned interactions (local/shared storage) |
-| `load.csv` | Full modeling dataset (local/shared storage) |
-| `metadata.csv` | Full unified item table: movie metadata + book ID stubs (local/shared storage) |
-| `clean_sample.csv` | Git-friendly sample of cleaned interactions |
-| `load_sample.csv` | Git-friendly sample with split labels |
-| `metadata_sample.csv` | Git-friendly sample of the item table (see limitation below) |
+| File | Purpose | Link |
+|---|---|---|
+| `data/raw/books/Books.csv.gz` | Book ratings | *missing* |
+| `data/raw/books/Books.jsonl.gz` | Book reviews & ratings | https://amazon-reviews-2023.github.io |
+| `data/raw/books/meta_Books.jsonl.gz` | Movie and TV metadata | https://amazon-reviews-2023.github.io |
+| `data/raw/movies/Movies_and_TV.csv.gz` | Movie and TV ratings | *missing* |
+| `data/raw/movies/Movies_and_TV.jsonl.gz` | Movie and TV reviews & ratings | https://amazon-reviews-2023.github.io |
+| `data/raw/movies/meta_Movies_and_TV.jsonl.gz` | Movie and TV metadata | https://amazon-reviews-2023.github.io |
+| `data/filtered/books_meta_common.parquet` | Book metadata for filtered subset | https://drive.google.com/file/d/1ok7IMYRSVeK8-HXwaJw7kzw2Mk3qYavu/view?usp=sharing |
+| `data/filtered/books_reviews_common.parquet` | Book reviews & ratings for filtered subset | https://drive.google.com/file/d/1bzgYlx1W1bt3i7aY8ALoctoGhomRuRLZ/view?usp=sharing |
+| `data/filtered/movies_meta_common.parquet` | Movies metadata for filtered subset | https://drive.google.com/file/d/1-Gyhxr615g30-Qa6fdG0fjAe4JGK7FMS/view?usp=sharing |
+| `data/filtered/movies_reviews_common.parquet` | Movies reviews & ratings for filtered subset | https://drive.google.com/file/d/1Uz88BunWZNWFVz86O6iAcq3vqkjxbwj2/view?usp=sharing |
+| `data/cache/common_user_ids.pkl` | Intersection of `user_id`s from Books & Movies datasets | https://drive.google.com/file/d/1K-emjnRk_G3AjZ9RhB17ksI4EKZ5XMxr/view?usp=sharing | 
+| `clean.csv` | Full cleaned interactions (local/shared storage) | *n/a* |
+| `load.csv` | Full modeling dataset (local/shared storage) | *n/a* |
+| `metadata.csv` | Full unified item table: movie metadata + book ID stubs (local/shared storage) | *n/a* |
+| `clean_sample.csv` | Git-friendly sample of cleaned interactions | *n/a* |
+| `load_sample.csv` | Git-friendly sample with split labels | *n/a* |
+| `metadata_sample.csv` | Git-friendly sample of the item table (see limitation below) | *n/a* |
 
 Raw data and full generated outputs are excluded from Git because they are large. The
 sample CSVs are committed so collaborators can test the workflow and inspect the

@@ -15,6 +15,8 @@
 # Versions are pinned (==) to what was resolved on 2026-07-06 for reproducibility;
 # reconfirmed unchanged on 2026-07-12 after the BPR -> ALS rebuild (no new
 # dependencies were introduced, only how the existing ones are used).
+# 2026-07-16: pyarrow added for notebooks/data_filtering.ipynb (streaming
+# Parquet writes/reads for the Amazon Books/Movies review + metadata dumps).
 # =============================================================================
 
 # --- Core recommender stack --------------------------------------------------
@@ -22,6 +24,7 @@ implicit==0.7.3        # ALS (fold-in via recalculate_item) + ranking metrics (N
 numpy==2.5.1           # Array backbone. Pinned: implicit/scipy/pandas ABI must agree.
 scipy==1.18.0          # Sparse matrices (csr_matrix) for the user x item interactions.
 pandas==3.0.3          # Load MovieLens u.data; map raw IDs -> contiguous integer indices.
+pyarrow==25.0.0        # Streaming Parquet writes/reads (notebooks/data_filtering.ipynb).
 tqdm==4.68.3           # Progress bars used internally by implicit's fit / evaluation.
 threadpoolctl==3.6.0   # Controls BLAS thread count; keeps implicit's OpenBLAS well-behaved.
 matplotlib==3.11.0     # Warm-up curve plot (Section 9).
