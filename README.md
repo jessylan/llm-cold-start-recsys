@@ -45,19 +45,27 @@ Raw Amazon data
 
 ```text
 .
-|-- data/raw/                         # local raw data (not committed)
-|-- data/filtered/                    # local filtered data (not committed)
-|-- data/cache/                       # local cache data (not committed)
+|-- data/raw/                           # local raw data (not committed)
+|-- data/filtered/                      # local filtered data (not committed)
+|-- data/cache/                         # local cache data (not committed)
 |-- design_documents/
-|   `-- initial_pipeline_design/      # baseline and architecture artifacts
+|   `-- initial_pipeline_design/        # baseline and architecture artifacts
 |-- notebooks/
+|   |-- baseline_steel_thread_cf.ipynb  # how-to for recsys modules
 |   |-- data_cleaning.ipynb
-|   |-- data_filtering.ipynb          # filtering reviews datasets and metadata as well
+|   |-- data_filtering.ipynb            # filtering reviews datasets and metadata as well
 |   `-- train_test_split.ipynb
 |-- outputs/
 |   |-- clean_sample.csv
 |   |-- load_sample.csv
 |   `-- metadata_sample.csv
+|-- recsys/
+|   |-- __init__.py                     # 
+|   |-- cf.py                           # pure collaborative filtering baseline model
+|   |-- eval.py                         # evaluation harness
+|   |-- load.py                         # load the data (currently MovieLens-100k)
+|   |-- pop.py                          # popularity and activity baseline models
+|   `-- protocol.py                     # defines the `RetrievalModel` class which `eval.py` uses to ensure models are correctly built 
 |-- .gitignore
 `-- README.md
 ```
