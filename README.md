@@ -12,7 +12,7 @@ It cleans and combines ratings, then creates standard and cold-start evaluation 
 1. Use Python 3 and install the core dependencies:
 
    ```bash
-   pip install pandas numpy matplotlib jupyter ipykernel
+   pip install -r requirements.txt
    ```
 
 2. Place the raw files in the locations shown under **Project structure**.
