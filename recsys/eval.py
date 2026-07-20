@@ -16,7 +16,7 @@ from implicit.evaluation import ndcg_at_k
 
 from recsys.protocol import RetrievalModel
 
-METRICS = ["NDCG", "Recall", "HitRate", "AUC"]
+METRICS = ["NDCG", "Precision", "Recall", "HitRate", "AUC"]
 METRICS_MODE_B = ["NDCG", "Precision", "Recall", "HitRate", "AUC"]
 
 
@@ -35,16 +35,17 @@ def _check_model(model):
 # Metric primitives -- model-agnostic, operate on (model, train_matrix, test_matrix) directly
 # ---------------------------------------------------------------------------
 
-def recall_and_hit_rate_at_k(model, train_matrix, test_matrix, K=100):
-    """Macro-averaged Recall@K and HitRate@K. Recall@K is the fraction of a user's held-out
-    items that appear in their top-K; HitRate@K is whether at least one held-out item appears
-    in their top-K. Returns (recall, hit_rate, n_eval_users)."""
+def precision_recall_hit_at_k(model, train_matrix, test_matrix, K=100):
+    """Macro-averaged Precision@K, Recall@K, and HitRate@K. Precision@K is the fraction of the
+    K recommended slots that were actually relevant; Recall@K is the fraction of a user's
+    held-out items that appear in their top-K; HitRate@K is whether at least one held-out item
+    appears in their top-K. Returns (precision, recall, hit_rate, n_eval_users)."""
     n_users = train_matrix.shape[0]
     user_ids = np.arange(n_users)
     rec_ids, _ = model.recommend(user_ids, train_matrix[user_ids], N=K, filter_already_liked_items=True)
 
     test_csr = test_matrix.tocsr()
-    recalls, hits = [], []
+    precisions, recalls, hits = [], [], []
     for u in range(n_users):
         start, end = test_csr.indptr[u], test_csr.indptr[u + 1]
         relevant = set(test_csr.indices[start:end].tolist())
@@ -52,10 +53,11 @@ def recall_and_hit_rate_at_k(model, train_matrix, test_matrix, K=100):
             continue
         recommended = set(rec_ids[u].tolist())
         n_hit = len(relevant & recommended)
+        precisions.append(n_hit / K)
         recalls.append(n_hit / len(relevant))
         hits.append(1.0 if n_hit > 0 else 0.0)
 
-    return float(np.mean(recalls)), float(np.mean(hits)), len(recalls)
+    return float(np.mean(precisions)), float(np.mean(recalls)), float(np.mean(hits)), len(recalls)
 
 
 def auc_at_full(score_matrix, train_matrix, test_matrix):
@@ -106,7 +108,8 @@ def reference_scores(models, dataset, K=100):
     for model in models:
         _check_model(model)
         per_seed["NDCG"].append(ndcg_at_k(model, dataset.ref_train, dataset.ref_test, K=K, show_progress=False))
-        recall, hit, n_eval = recall_and_hit_rate_at_k(model, dataset.ref_train, dataset.ref_test, K=K)
+        precision, recall, hit, n_eval = precision_recall_hit_at_k(model, dataset.ref_train, dataset.ref_test, K=K)
+        per_seed["Precision"].append(precision)
         per_seed["Recall"].append(recall)
         per_seed["HitRate"].append(hit)
         per_seed["AUC"].append(auc_at_full(model.score_matrix(), dataset.ref_train, dataset.ref_test))
@@ -129,9 +132,9 @@ def evaluate_at_k(model, dataset, k, K=100):
     train_k = dataset.ref_train + dataset.revealed_matrix_at_k(k)
     folded = model.fold_in(dataset, k)
     ndcg = ndcg_at_k(folded, train_k, dataset.test_matrix, K=K, show_progress=False)
-    recall, hit, n_eval = recall_and_hit_rate_at_k(folded, train_k, dataset.test_matrix, K=K)
+    precision, recall, hit, n_eval = precision_recall_hit_at_k(folded, train_k, dataset.test_matrix, K=K)
     auc = auc_at_full(folded.score_matrix(), train_k, dataset.test_matrix)
-    return {"NDCG": ndcg, "Recall": recall, "HitRate": hit, "AUC": auc, "n_eval": n_eval}
+    return {"NDCG": ndcg, "Precision": precision, "Recall": recall, "HitRate": hit, "AUC": auc, "n_eval": n_eval}
 
 
 def sweep(models, dataset, k_levels, K=100):
