@@ -25,6 +25,7 @@ numpy==2.5.1           # Array backbone. Pinned: implicit/scipy/pandas ABI must 
 scipy==1.18.0          # Sparse matrices (csr_matrix) for the user x item interactions.
 pandas==3.0.3          # Load MovieLens u.data; map raw IDs -> contiguous integer indices.
 pyarrow==25.0.0        # Streaming Parquet writes/reads (notebooks/data_filtering.ipynb).
+scikit-learn==1.8.0    # TF-IDF + cosine similarity for the content-based hybrid CF (recsys/cbhcf.py).
 tqdm==4.68.3           # Progress bars used internally by implicit's fit / evaluation.
 threadpoolctl==3.6.0   # Controls BLAS thread count; keeps implicit's OpenBLAS well-behaved.
 matplotlib==3.11.0     # Warm-up curve plot (Section 9).
