@@ -4,7 +4,7 @@ University of Michigan MADS Capstone project for Team Cold Start. The project ex
 using language models to improve recommendations for new users and items with little or
 no interaction history.
 
-The data pipeline uses the Amazon Reviews 2023 5-core Books and Movies and TV datasets.
+The data pipeline uses the Amazon Reviews 2023 "Books" and "Movies and TV" datasets.
 It cleans and combines ratings, then creates standard and cold-start evaluation splits.
 
 ## Quick start
