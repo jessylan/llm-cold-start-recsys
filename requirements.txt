@@ -29,6 +29,7 @@ scikit-learn==1.8.0    # TF-IDF + cosine similarity for the content-based hybrid
 tqdm==4.68.3           # Progress bars used internally by implicit's fit / evaluation.
 threadpoolctl==3.6.0   # Controls BLAS thread count; keeps implicit's OpenBLAS well-behaved.
 matplotlib==3.11.0     # Warm-up curve plot (Section 9).
+wandb==0.26.1          # Experiment tracking for the warm-up sweeps (Sections 9-10).
 
 # --- Notebook runtime --------------------------------------------------------
 ipykernel==7.3.0       # Registers this venv as a selectable Jupyter kernel.
