@@ -34,12 +34,6 @@ class RetrievalModel(Protocol):
         array; returns (ids, scores) shaped to match."""
         ...
 
-    def score_matrix(self) -> np.ndarray:
-        """Dense (n_users, n_items) score array reflecting current internal state. Generalizes
-        Popularity's np.tile(popularity, ...) and ALS's user_factors @ item_factors.T -- eval.py
-        never needs to know which."""
-        ...
-
     def fold_in(self, dataset: Dataset, k: int) -> "RetrievalModel":
         """Return a NEW object satisfying this Protocol, reflecting cold items' reveal-level-k
         state, WITHOUT mutating self. Strategy is implementation-defined: a cheap non-mutating

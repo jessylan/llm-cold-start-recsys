@@ -28,30 +28,62 @@ class PopularityModel:
         return self
 
     def recommend(self, userid, user_items, N=10, filter_already_liked_items=True):
+        """Vectorized top-N (exact match to the old per-user islice loop, ~orders of magnitude
+        faster at Amazon-Books scale). The ranking is global -- the same for every user -- so we
+        take the global top-M candidates ONCE, where M = N + (max items any user has already seen).
+        That guarantees every user still has >= N unseen items inside the top-M, so per user we just
+        pick the first N unseen, in rank order, via a cumulative count over a boolean seen-mask --
+        no Python loop over users or over the catalog."""
         single = np.isscalar(userid)
         user_ids = np.atleast_1d(userid)
-        rows = sparse.csr_matrix(user_items)
+        n_query = len(user_ids)
+        n_items = len(self.ranked_items)
 
-        out_ids = np.zeros((len(user_ids), N), dtype=np.int32)
-        out_scores = np.zeros((len(user_ids), N), dtype=np.float32)
-        for i in range(len(user_ids)):
-            seen = set(rows.indices[rows.indptr[i]:rows.indptr[i + 1]].tolist()) if filter_already_liked_items else set()
-            picks = [item for item in self.ranked_items if item not in seen][:N]
-            out_ids[i, :len(picks)] = picks
-            out_scores[i, :len(picks)] = self.popularity[picks]
+        if not filter_already_liked_items:
+            top = self.ranked_items[:N]
+            out_ids = np.tile(top.astype(np.int64), (n_query, 1))
+            out_scores = np.tile(self.popularity[top].astype(np.float32), (n_query, 1))
+            return (out_ids[0], out_scores[0]) if single else (out_ids, out_scores)
+
+        rows = sparse.csr_matrix(user_items)
+        max_seen = int(np.diff(rows.indptr).max()) if n_query else 0
+        M = min(N + max_seen, n_items)                 # >= N unseen guaranteed within the top-M
+        topM = self.ranked_items[:M]                    # (M,) global ids, in rank order
+        topM_scores = self.popularity[topM].astype(np.float32)
+        pos = np.full(n_items, -1, dtype=np.int64)      # global id -> column in topM, or -1
+        pos[topM] = np.arange(M)
+
+        out_ids = np.empty((n_query, N), dtype=np.int64)
+        out_scores = np.empty((n_query, N), dtype=np.float32)
+        chunk = max(500, min(20_000, 50_000_000 // max(M, 1)))  # bound the (chunk x M) mask memory
+        for s in range(0, n_query, chunk):
+            e = min(s + chunk, n_query)
+            sub = rows[s:e]
+            b = e - s
+            ur = np.repeat(np.arange(b), np.diff(sub.indptr))   # local user row per seen entry
+            loc = pos[sub.indices]                              # its column in topM (-1 if outside)
+            keep = loc >= 0
+            seen_mask = np.zeros((b, M), dtype=bool)
+            seen_mask[ur[keep], loc[keep]] = True
+            valid = ~seen_mask
+            take = valid & (np.cumsum(valid, axis=1) <= N)      # the first N unseen per user
+            cols = np.nonzero(take)[1].reshape(b, N)            # exactly N/row (>= N valids guaranteed)
+            out_ids[s:e] = topM[cols]
+            out_scores[s:e] = topM_scores[cols]
 
         return (out_ids[0], out_scores[0]) if single else (out_ids, out_scores)
-
-    def score_matrix(self):
-        # float64, not popularity's native int64 -- callers (e.g. eval.py's Mode B) mask
-        # individual entries to -inf in place, which an int array can't hold.
-        return np.tile(self.popularity, (self.n_users, 1)).astype(np.float64)
 
     def fold_in(self, dataset, k):
         """Popularity has no partial-update mechanism for a raw interaction count, so its
         "fold-in" is a full refit on train + the cold items' revealed interactions at k."""
         train_k = dataset.ref_train + dataset.revealed_matrix_at_k(k)
         return PopularityModel(train_k)
+
+    def fold_in_ceiling(self, dataset):
+        """Within-item warm reference: refit on train + every cold item's FULL pre-test interactions
+        (the ceiling). The Popularity dual of ALSModel.fold_in_ceiling."""
+        train_ceiling = dataset.ref_train + dataset.ceiling_matrix()
+        return PopularityModel(train_ceiling)
 
 
 class ActivityModel:
@@ -77,17 +109,15 @@ class ActivityModel:
     def recommend(self, userid, user_items, N=10, filter_already_liked_items=True):
         raise NotImplementedError(
             "ActivityModel has no per-user item ranking -- it only supports the item-to-user "
-            "(Mode B) evaluation path via score_matrix()/fold_in(), not Mode A's recommend()."
+            "(Mode B) evaluation path (gpu_retrieval.mode_b_*), not Mode A's recommend()."
         )
-
-    def score_matrix(self):
-        # Same activity score for every item -- the direct dual of PopularityModel's
-        # np.tile(popularity, (n_users, 1)), transposed onto the user axis. float64, not
-        # user_activity's native int64 -- callers mask entries to -inf in place.
-        return np.tile(self.user_activity, (self.n_items, 1)).T.astype(np.float64)
 
     def fold_in(self, dataset, k):
         # No k-dependence: user_activity is frozen (computed once on ref_train, exactly like
         # user_factors elsewhere), and the revealed-user exclusion is applied generically by
         # eval.py's Mode B sweep, not per-model here.
+        return self
+
+    def fold_in_ceiling(self, dataset):
+        # Same as fold_in: user_activity is frozen; the ceiling exclusion is applied by the caller.
         return self

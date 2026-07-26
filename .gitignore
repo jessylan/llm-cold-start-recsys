@@ -15,6 +15,7 @@ outputs/*
 # Raw data (large files, keep the folders)
 data/raw/movies/*
 data/raw/books/*
+data/raw/5-core/*
 data/filtered/*
 data/cache/*
 !data/raw/movies/.gitkeep

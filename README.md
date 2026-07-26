@@ -74,16 +74,17 @@ Raw Amazon data
 
 | File | Purpose | Link |
 |---|---|---|
-| `data/raw/books/Books.csv.gz` | Book ratings | *missing* |
+
 | `data/raw/books/Books.jsonl.gz` | Book reviews & ratings | https://amazon-reviews-2023.github.io |
 | `data/raw/books/meta_Books.jsonl.gz` | Movie and TV metadata | https://amazon-reviews-2023.github.io |
-| `data/raw/movies/Movies_and_TV.csv.gz` | Movie and TV ratings | *missing* |
 | `data/raw/movies/Movies_and_TV.jsonl.gz` | Movie and TV reviews & ratings | https://amazon-reviews-2023.github.io |
 | `data/raw/movies/meta_Movies_and_TV.jsonl.gz` | Movie and TV metadata | https://amazon-reviews-2023.github.io |
-| `data/filtered/books_meta_common.parquet` | Book metadata for filtered subset | https://drive.google.com/file/d/1ok7IMYRSVeK8-HXwaJw7kzw2Mk3qYavu/view?usp=sharing |
-| `data/filtered/books_reviews_common.parquet` | Book reviews & ratings for filtered subset | https://drive.google.com/file/d/1bzgYlx1W1bt3i7aY8ALoctoGhomRuRLZ/view?usp=sharing |
-| `data/filtered/movies_meta_common.parquet` | Movies metadata for filtered subset | https://drive.google.com/file/d/1-Gyhxr615g30-Qa6fdG0fjAe4JGK7FMS/view?usp=sharing |
-| `data/filtered/movies_reviews_common.parquet` | Movies reviews & ratings for filtered subset | https://drive.google.com/file/d/1Uz88BunWZNWFVz86O6iAcq3vqkjxbwj2/view?usp=sharing |
+| `data/raw/5-core/Books.csv.gz` | Book ratings | https://amazon-reviews-2023.github.io/data_processing/5core.html |
+| `data/raw/5-core/Movies_and_TV.csv.gz` | Movie and TV ratings | https://amazon-reviews-2023.github.io/data_processing/5core.html |
+| `data/filtered/books_meta_5core_common.parquet` | Book metadata for filtered subset | https://drive.google.com/file/d/1_xSLj0kM2yeNt4FX7aAHcvY19fFaOnaR/view?usp=sharing |
+| `data/filtered/books_5core_common.parquet` | Book reviews & ratings for filtered subset | https://drive.google.com/file/d/1YBsJEZDu1QlFG8WJxFJadgnSoJBzoewZ/view?usp=sharing |
+| `data/filtered/movies_meta_5core_common.parquet` | Movies metadata for filtered subset | https://drive.google.com/file/d/1iDKH3So891ohCIk977BrUOW_hpSbktQA/view?usp=sharing |
+| `data/filtered/movies_5core_common.parquet` | Movies reviews & ratings for filtered subset | https://drive.google.com/file/d/1kvN5UuoBenbZFNuUq387WZSOgDfXpLQv/view?usp=sharing |
 | `data/cache/common_user_ids.pkl` | Intersection of `user_id`s from Books & Movies datasets | https://drive.google.com/file/d/1K-emjnRk_G3AjZ9RhB17ksI4EKZ5XMxr/view?usp=sharing | 
 | `clean.csv` | Full cleaned interactions (local/shared storage) | *n/a* |
 | `load.csv` | Full modeling dataset (local/shared storage) | *n/a* |
