@@ -24,6 +24,7 @@ interaction. Unlike MovieLens's implicit-CF convention (every rating event count
 value), Amazon ratings are explicit, and a 1-3 star review is not a reliable positive signal.
 """
 from dataclasses import dataclass, field
+import os
 
 import numpy as np
 import pandas as pd
@@ -47,6 +48,13 @@ class Dataset:
     cold_item_ids: np.ndarray = None   # sorted(reveal_pool.keys()), precomputed once
     index_to_user: dict = field(default_factory=dict)
     index_to_item: dict = field(default_factory=dict)
+    # A SECOND, disjoint cold population reserved for hyperparameter selection -- itself a Dataset,
+    # sharing this one's ref_train/ref_val/ref_test and id maps but carrying its own cold items,
+    # reveal pools and reserved test set. Because it satisfies the same interface, every function in
+    # eval.py works on it unchanged: `ev.sweep_mode_a_cached(models, dataset.cold_val, ...)` selects
+    # a hyperparameter without ever touching the reported cold-test population. `None` on the nested
+    # instance (no further recursion) and when cold_val_fraction=0.
+    cold_val: "Dataset" = None
 
     def revealed_matrix_at_k(self, k: int) -> sparse.csr_matrix:
         """User x item sparse matrix of cold items' revealed interactions at reveal level k."""
@@ -96,6 +104,42 @@ class Dataset:
         return self.cold_item_ids, item_users
 
 
+def dataset_fingerprint(dataset: "Dataset") -> tuple:
+    """A cheap, order-insensitive summary of everything downstream results depend on.
+
+    Use it as the `params` of a `cache_pickle` key so a derived artifact (the Popularity floor, the
+    Activity curve, CBHCF's content-score block, a results pickle) can never be silently reused
+    against a different split. It changes if the user/item universe changes, if `ref_train` gains or
+    loses interactions, or if either cold population changes membership -- the id SUM catches a
+    swapped population that happens to be the same size.
+
+    Note what this cannot do: it is computed FROM a Dataset, so it cannot key the Dataset's own
+    cache (you would have to build the thing to learn its key). That one must be keyed on the
+    INPUTS instead -- see `load_params_fingerprint`.
+    """
+    cold_val_ids = None if dataset.cold_val is None else dataset.cold_val.cold_item_ids
+    return (
+        int(dataset.n_users), int(dataset.n_items),
+        int(dataset.ref_train.nnz), int(dataset.ref_test.nnz),
+        int(0 if dataset.ref_val is None else dataset.ref_val.nnz),
+        int(len(dataset.cold_item_ids)), int(np.asarray(dataset.cold_item_ids, dtype=np.int64).sum()),
+        int(dataset.test_matrix.nnz),
+        int(0 if cold_val_ids is None else len(cold_val_ids)),
+        int(0 if cold_val_ids is None else np.asarray(cold_val_ids, dtype=np.int64).sum()),
+    )
+
+
+def load_params_fingerprint(data_path: str, **load_kwargs) -> tuple:
+    """Input-side key for the Dataset's OWN cache: the source file's identity plus every argument
+    that shapes the split. Complements `dataset_fingerprint`, which keys everything downstream."""
+    try:
+        stat = os.stat(data_path)
+        source = (os.path.basename(data_path), stat.st_size, int(stat.st_mtime))
+    except OSError:
+        source = (os.path.basename(data_path), None, None)
+    return (source, tuple(sorted(load_kwargs.items())))
+
+
 def _build_csr(rows_df: pd.DataFrame, n_users: int, n_items: int) -> sparse.csr_matrix:
     return sparse.csr_matrix(
         (np.ones(len(rows_df)), (rows_df["user_index"], rows_df["item_index"])),
@@ -107,6 +151,7 @@ def load_dataset(
     data_path: str = "data/filtered/books_5core_common.parquet",
     min_interactions: int = 25,
     cold_item_fraction: float = 0.10,
+    cold_val_fraction: float = 0.10,
     n_reveal: int = 20,
     test_size: int = 5,
     min_rating: float = 4.0,
@@ -123,6 +168,21 @@ def load_dataset(
     post-dedup) total interactions are eligible to be selected as cold, guaranteeing every
     selected item can supply the full k=0..n_reveal sweep without running out of history
     (n_reveal revealable + at least min_interactions - n_reveal reserved for evaluation).
+
+    Two cold populations, not one. The eligible pool is split 80 / 10 / 10 by default: 80% stay warm
+    and are trained on, `cold_item_fraction` becomes the reported TEST cold set, and
+    `cold_val_fraction` becomes a disjoint VALIDATION cold set exposed as `Dataset.cold_val`.
+    Selecting a hyperparameter (CBHCF's content weight, field weights, a future intervention's
+    knobs) on the test cold set would bias every reported number, and `ref_val` is the wrong
+    instrument for it -- `ref_val` holds out *warm* interactions, so it answers a different question
+    than cold-item retrieval. The validation cold items are drawn from the same eligible pool by the
+    same rule, so they are exchangeable with the test ones.
+
+    Set `cold_val_fraction=0` to recover the single-population behaviour. The test population is
+    unaffected by this parameter (the two draws come off one generator in a fixed order), but
+    `ref_train` is NOT: the validation items must leave it, since an item cannot simultaneously be
+    trained on and be cold. Any cached Dataset / fitted model / cached result from a run with a
+    different `cold_val_fraction` is therefore stale.
 
     Reveal and reserve, per cold item (leave-last-`test_size`-out): sort that item's interactions
     chronologically. The LAST `test_size` are the permanently reserved test set (fixed size for every
@@ -179,34 +239,50 @@ def load_dataset(
     df = df.loc[df["rating"] >= min_rating].copy()
     n_dropped_by_rating = n_before_rating_filter - len(df)
 
-    # --- Cold-item selection: unchanged mechanism, operating on the post-filter population ---
+    # --- Cold-item selection: TWO disjoint populations, test and validation -------------------
     item_total_count = df.groupby("item_index").size().reindex(range(n_items), fill_value=0)
     eligible_items = item_total_count.index[item_total_count >= min_interactions].to_numpy()
 
+    # Drawn SEQUENTIALLY from one generator so that adding a validation population does not disturb
+    # the test population: the first draw consumes exactly the randomness it did before
+    # cold_val_fraction existed, so `cold_items` is bit-identical to the single-population split.
+    # Only ref_train changes (it loses the validation items), which is unavoidable -- an item cannot
+    # be both trained on and cold.
     selection_rng = np.random.default_rng(seed)
     n_cold = round(len(eligible_items) * cold_item_fraction)
     cold_items = set(selection_rng.choice(eligible_items, size=n_cold, replace=False).tolist())
+    n_cold_val = round(len(eligible_items) * cold_val_fraction)
+    if n_cold_val:
+        remaining_eligible = np.setdiff1d(eligible_items, np.fromiter(cold_items, dtype=np.int64))
+        cold_val_items = set(selection_rng.choice(remaining_eligible, size=n_cold_val,
+                                                  replace=False).tolist())
+    else:
+        cold_val_items = set()
 
-    cold_rows = df.loc[df["item_index"].isin(cold_items)].sort_values(["item_index", "timestamp"], kind="stable")
+    def _cold_pools(item_set):
+        """Reveal / ceiling / reserved-test split for one cold population. Leave-last-`test_size`-out:
+        eligibility (>= min_interactions, with min_interactions - test_size >= n_reveal) guarantees
+        the three slices are disjoint -- first n_reveal (reveal) and all-but-last test_size (ceiling)
+        never reach into the last test_size (test)."""
+        rows = df.loc[df["item_index"].isin(item_set)].sort_values(["item_index", "timestamp"],
+                                                                   kind="stable")
+        reveal, ceiling, reserved = {}, {}, []
+        for item_idx, group in rows.groupby("item_index", sort=False):
+            users_sorted = group["user_index"].to_numpy()
+            reveal[item_idx] = users_sorted[:n_reveal]        # first n_reveal -> warm-up curve
+            ceiling[item_idx] = users_sorted[:-test_size]     # all but last m -> within-item ceiling
+            reserved.append(group.iloc[-test_size:])          # last m -> fixed reserved test
+        matrix = _build_csr(pd.concat(reserved), n_users, n_items)
+        return reveal, ceiling, matrix, np.array(sorted(reveal.keys()))
 
-    reveal_pool = {}
-    ceiling_pool = {}
-    reserved_test_parts = []
-    for item_idx, group in cold_rows.groupby("item_index", sort=False):
-        users_sorted = group["user_index"].to_numpy()
-        # Leave-last-`test_size`-out. Eligibility (>= min_interactions) with min_interactions - test_size
-        # >= n_reveal guarantees the three slices below are disjoint: first n_reveal (reveal) and
-        # all-but-last test_size (ceiling) never reach into the last test_size (test).
-        reveal_pool[item_idx] = users_sorted[:n_reveal]        # first n_reveal -> warm-up curve (k=0..n_reveal)
-        ceiling_pool[item_idx] = users_sorted[:-test_size]     # all but last m -> within-item warm ceiling
-        reserved_test_parts.append(group.iloc[-test_size:])    # last m -> fixed reserved test
-
-    reserved_test_df = pd.concat(reserved_test_parts)
-    test_matrix = _build_csr(reserved_test_df, n_users, n_items)
-    cold_item_ids = np.array(sorted(reveal_pool.keys()))
+    reveal_pool, ceiling_pool, test_matrix, cold_item_ids = _cold_pools(cold_items)
+    val_pools = _cold_pools(cold_val_items) if cold_val_items else None
 
     # --- Warm-item sparsity pre-filter -------------------------------------------------------
-    warm_rows = df.loc[~df["item_index"].isin(cold_items)]
+    # BOTH cold populations leave the warm pool: a validation cold item that stayed in ref_train
+    # would not be cold at all.
+    held_out_items = cold_items | cold_val_items
+    warm_rows = df.loc[~df["item_index"].isin(held_out_items)]
     warm_item_count = warm_rows.groupby("item_index").size()
     eligible_warm_items = set(warm_item_count.index[warm_item_count >= min_interactions_warm])
     n_items_dropped_sparse = warm_rows["item_index"].nunique() - len(eligible_warm_items)
@@ -248,8 +324,11 @@ def load_dataset(
     print(f"duplicate (user,item) pairs collapsed: {n_dup_collapsed:,}")
     print(f"rows dropped by rating < {min_rating} filter: {n_dropped_by_rating:,} "
           f"({n_dropped_by_rating / n_before_rating_filter:.1%})")
-    print(f"cold items: {len(cold_item_ids):,}  (eligible pool >= {min_interactions}: "
+    print(f"cold items (TEST): {len(cold_item_ids):,}  (eligible pool >= {min_interactions}: "
           f"{len(eligible_items):,}, fraction={cold_item_fraction})")
+    if val_pools is not None:
+        print(f"cold items (VALIDATION): {len(val_pools[3]):,}  (fraction={cold_val_fraction}) "
+              f"-- for hyperparameter selection only; disjoint from the test population")
     print(f"warm items dropped by sparsity pre-filter (< {min_interactions_warm} interactions): "
           f"{n_items_dropped_sparse:,}  ({n_interactions_dropped_sparse:,} interactions discarded)")
     print(f"warm items retained: {len(eligible_warm_items):,}")
@@ -265,18 +344,22 @@ def load_dataset(
           f"median={int(np.median(ceiling_sizes))} max={ceiling_sizes.max()}  "
           f"(= item_total - {test_size}; {n_reveal} for exactly-{min_interactions} items)")
 
+    shared = dict(n_users=n_users, n_items=n_items, ref_train=ref_train, ref_test=ref_test,
+                  ref_val=ref_val, index_to_user=index_to_user, index_to_item=index_to_item)
+    # The validation view shares ref_train/ref_val/ref_test and the id maps by reference (they are
+    # the same objects, not copies) and differs only in its cold population -- so it satisfies the
+    # Dataset interface and eval.py operates on it with no changes. cold_val stays None on it, so
+    # there is no recursion.
+    cold_val = None if val_pools is None else Dataset(
+        test_matrix=val_pools[2], reveal_pool=val_pools[0], ceiling_pool=val_pools[1],
+        cold_item_ids=val_pools[3], **shared)
     return Dataset(
-        n_users=n_users,
-        n_items=n_items,
-        ref_train=ref_train,
-        ref_test=ref_test,
         test_matrix=test_matrix,
-        ref_val=ref_val,
         reveal_pool=reveal_pool,
         ceiling_pool=ceiling_pool,
         cold_item_ids=cold_item_ids,
-        index_to_user=index_to_user,
-        index_to_item=index_to_item,
+        cold_val=cold_val,
+        **shared,
     )
 
 

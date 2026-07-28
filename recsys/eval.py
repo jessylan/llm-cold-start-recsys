@@ -126,9 +126,10 @@ def ceiling_reference(models, dataset, K=100):
             from recsys import gpu_retrieval
             ev_u = np.flatnonzero(np.diff(dataset.test_matrix.tocsr().indptr))
             a = gpu_retrieval.mode_a_auc(
-                folded.user_factors, folded.item_factors,
+                None, None,                     # scores come from `source`, not from factors
                 model._auc_candidate_ids, model._auc_global_to_local,
-                ev_u, ceiling_train[ev_u], dataset.test_matrix[ev_u], device=model._device)
+                ev_u, ceiling_train[ev_u], dataset.test_matrix[ev_u],
+                device=model._device, source=folded.auc_pool_source())
             per_seed["AUC"].append(float(np.nanmean(a)))
         else:
             per_seed["AUC"].append(float("nan"))
@@ -225,9 +226,10 @@ def evaluate_at_k(model, dataset, k, K=100):
         from recsys import gpu_retrieval
         ev_u = np.flatnonzero(np.diff(dataset.test_matrix.tocsr().indptr))
         a = gpu_retrieval.mode_a_auc(
-            folded.user_factors, folded.item_factors,
+            None, None,                         # scores come from `source`, not from factors
             model._auc_candidate_ids, model._auc_global_to_local,
-            ev_u, train_k[ev_u], dataset.test_matrix[ev_u], device=model._device)
+            ev_u, train_k[ev_u], dataset.test_matrix[ev_u],
+            device=model._device, source=folded.auc_pool_source())
         auc = float(np.nanmean(a))
     else:
         auc = float("nan")
@@ -302,7 +304,7 @@ def sweep_mode_a_cached(models, dataset, k_levels, K=100, verbose=True, with_auc
         for ki, k in enumerate(k_levels):
             _t = time.perf_counter(); folded = model.fold_in(dataset, k); t["foldin"] += time.perf_counter() - _t
             if with_auc:
-                cold_by_k.append(folded.item_factors[model._cold_ids])
+                cold_by_k.append(folded.cold_block_source())
             _t = time.perf_counter(); rec = folded.recommend_cached(eval_users, train_k_eval[ki], K); t["recommend"] += time.perf_counter() - _t
             _t = time.perf_counter(); results[ki][si] = _mode_a_metrics_core(rec, m_rows, m_items, m_rel, K); t["metric"] += time.perf_counter() - _t
         if with_auc:
@@ -311,9 +313,10 @@ def sweep_mode_a_cached(models, dataset, k_levels, K=100, verbose=True, with_auc
             # _auc_warm_ids (warm degree >= auc_min_degree) + cold, not the full warm pool. warm_excl
             # is the full ref_train; items outside the degree-matched pool map to -1 and are ignored.
             auc_arr = gpu_retrieval.mode_a_auc_sweep(
-                model._uf_gpu, model.item_factors[model._auc_warm_ids], cold_by_k,
+                None, None, None,               # scores come from the sources below, not from factors
                 model._auc_warm_global_to_local, model._cold_global_to_local,
-                eval_users, warm_excl, cold_excl_by_k, test_eval, device=model._device)
+                eval_users, warm_excl, cold_excl_by_k, test_eval, device=model._device,
+                warm_source=model.warm_auc_source(), cold_sources_by_k=cold_by_k)
             t["auc"] += time.perf_counter() - _t
             for ki in range(len(k_levels)):
                 auc_seed[ki][si] = float(np.nanmean(auc_arr[ki]))
@@ -553,15 +556,16 @@ def sweep_item_to_user_gpu(models, dataset, ctx, k_levels, K=10, verbose=True, w
                 t["score"] += time.perf_counter() - _t
             else:
                 _t = time.perf_counter(); folded = model.fold_in(dataset, k); t["foldin"] += time.perf_counter() - _t
-                cold_fac = folded.item_factors[cold_ids]            # reused by top-K and AUC
+                b_src = folded.mode_b_source()                      # reused by top-K and AUC
                 _t = time.perf_counter()
                 topk_users = gpu_retrieval.mode_b_topk_users(
-                    model._uf_gpu, cold_fac, cold_revealed_by_k[ki], K, device=model._device)
+                    None, None, cold_revealed_by_k[ki], K, device=model._device, source=b_src)
                 t["score"] += time.perf_counter() - _t
                 if do_auc:
                     _t = time.perf_counter()
-                    a = gpu_retrieval.mode_b_auc(model._uf_gpu, cold_fac, cold_test_csc,
-                                                 cold_revealed_by_k[ki], device=model._device)
+                    a = gpu_retrieval.mode_b_auc(None, None, cold_test_csc,
+                                                 cold_revealed_by_k[ki], device=model._device,
+                                                 source=b_src)
                     t["auc"] += time.perf_counter() - _t
                     auc_seed[ki][si] = float(np.nanmean(a))
             _t = time.perf_counter()
@@ -602,15 +606,15 @@ def mode_b_reference(models, dataset, ctx, K=10, with_auc=True):
         _check_model(model)
         model.load_factors_gpu(items=False)                              # user factors resident
         folded = model.fold_in_ceiling(dataset)
-        cold_fac = folded.item_factors[cold_ids]
+        b_src = folded.mode_b_source()
         topk_users = gpu_retrieval.mode_b_topk_users(
-            model._uf_gpu, cold_fac, ceiling_rev_csc, K, device=model._device)
+            None, None, ceiling_rev_csc, K, device=model._device, source=b_src)
         met = _mode_b_metrics_from_topk(topk_users, cold_ids, downsampled_csc, K)
         for m in ["NDCG", "Precision", "Recall", "HitRate"]:
             per_seed[m].append(met[m])
         if with_auc:
-            a = gpu_retrieval.mode_b_auc(model._uf_gpu, cold_fac, cold_test_csc,
-                                         ceiling_rev_csc, device=model._device)
+            a = gpu_retrieval.mode_b_auc(None, None, cold_test_csc,
+                                         ceiling_rev_csc, device=model._device, source=b_src)
             per_seed["AUC"].append(float(np.nanmean(a)))
         else:
             per_seed["AUC"].append(float("nan"))

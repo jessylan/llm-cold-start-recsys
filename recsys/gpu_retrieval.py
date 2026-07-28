@@ -12,37 +12,29 @@ items dropped by the sparsity pre-filter carry near-zero (regularized) factors a
 never enter a top-100, so this is near-exact vs implicit's full-catalog scoring; the parity check
 (bench_7) quantifies any divergence. Restricting also keeps the score matrix chunk-sized in VRAM.
 
-torch is imported lazily so CPU-only environments (e.g. the Mac) that never select the GPU
-backend don't need it installed.
+torch is imported lazily so CPU-only environments that never select the GPU backend don't need it
+installed.
+
+Score sources (scores.py): every function here takes its scores from a `scores.ItemBlockScores` /
+`scores.UserBlockScores` rather than computing `user_factors @ item_factors.T` inline, so a method
+whose score is not a product of two factor matrices (CBHCF's per-item blend, and the interventions
+after it) can reuse this ranking code unchanged. The factor arguments are still accepted and still
+the default: pass no `source=` and each function builds the bilinear source itself, running the
+same ops in the same order as before -- bench_8b / bench_14 / bench_15 are the parity gates on that.
 """
 import numpy as np
 
+from recsys.scores import (DenseItemBlock, DenseUserBlock, FactorItemBlock, FactorUserBlock,
+                           as_gpu as _as_gpu, gather_rows as _gather_rows)
 
-# Factor args below may be either numpy arrays (host) OR torch tensors already resident on the GPU
-# (see cf.ALSModel.load_factors_gpu). The two helpers below let the same code path use a resident
-# tensor with no host->device copy, or transfer from numpy when that's all we have.
-
-def _as_gpu(factors, device):
-    """Full factor matrix as a float32 GPU tensor: resident torch tensor returned as-is (no copy),
-    numpy transferred once."""
-    import torch
-    if torch.is_tensor(factors):
-        return factors
-    return torch.as_tensor(np.ascontiguousarray(factors, dtype=np.float32), device=device)
-
-
-def _gather_rows(factors, idx, device):
-    """Rows `idx` (numpy int) of `factors` as a GPU tensor: a device-side gather if `factors` is a
-    resident GPU tensor (no host copy of the big matrix), else a transfer of just those rows."""
-    import torch
-    if torch.is_tensor(factors):
-        return factors[torch.as_tensor(idx, device=device)]
-    return torch.as_tensor(np.ascontiguousarray(factors[idx], dtype=np.float32), device=device)
+__all__ = ["topk_recommend", "cold_merge_recommend", "mode_a_auc", "mode_a_auc_sweep",
+           "mode_b_topk_users", "mode_b_auc", "DenseItemBlock", "DenseUserBlock",
+           "FactorItemBlock", "FactorUserBlock"]
 
 
 def topk_recommend(user_factors, item_factors, candidate_ids, global_to_local,
                    userid, user_items, N=10, filter_already_liked_items=True,
-                   device="cuda:0", chunk=4096):
+                   device="cuda:0", chunk=4096, source=None):
     """Exact top-N over `candidate_ids`, matching implicit.recommend()'s calling convention.
 
     user_factors, item_factors : implicit's fitted factor arrays (numpy, float32).
@@ -52,6 +44,8 @@ def topk_recommend(user_factors, item_factors, candidate_ids, global_to_local,
     userid          : scalar or 1-D array of user ids.
     user_items      : CSR (len(userid) x n_items), row i = known likes for userid[i] -- same
                       row-alignment implicit requires.
+    source          : optional scores.ItemBlockScores over `candidate_ids`. When None (the default)
+                      the bilinear source is built from user_factors/item_factors.
     Returns (ids, scores): global item ids and their scores, shaped (N,) for a scalar userid or
     (len(userid), N) for an array -- identical to implicit.recommend().
     """
@@ -62,8 +56,8 @@ def topk_recommend(user_factors, item_factors, candidate_ids, global_to_local,
     user_items = user_items.tocsr()
     n_query = len(userid)
 
-    V = _gather_rows(item_factors, candidate_ids, device)        # candidate factors (resident gather or transfer)
-    n_cand = V.shape[0]
+    src = source or FactorItemBlock(user_factors, item_factors, candidate_ids, device)
+    n_cand = src.n_items
     N_eff = min(N, n_cand)
 
     out_ids = np.full((n_query, N), -1, dtype=np.int64)
@@ -71,8 +65,7 @@ def topk_recommend(user_factors, item_factors, candidate_ids, global_to_local,
 
     for start in range(0, n_query, chunk):
         stop = min(start + chunk, n_query)
-        uf = _gather_rows(user_factors, userid[start:stop], device)   # this chunk's user factors
-        scores = uf @ V.T  # (b, n_cand)
+        scores = src.user_scores(userid[start:stop])  # (b, n_cand)
 
         if filter_already_liked_items:
             # Mask each user's already-liked items that fall inside the candidate set, in one
@@ -98,7 +91,7 @@ def topk_recommend(user_factors, item_factors, candidate_ids, global_to_local,
 
 def cold_merge_recommend(user_factors, cold_factors, cold_ids, cold_global_to_local,
                          warm_top_ids, warm_top_scores, userid, user_items, N,
-                         device="cuda:0", chunk=4096):
+                         device="cuda:0", chunk=4096, source=None):
     """Merge a cached warm top-M with freshly-scored cold items -> exact top-N over warm+cold.
 
     This is the k-sweep fast path (report S8(b)): the warm block of the score is invariant across
@@ -108,6 +101,9 @@ def cold_merge_recommend(user_factors, cold_factors, cold_ids, cold_global_to_lo
     because a warm item outside the warm top-M can never enter the final top-N.
 
     warm_top_ids, warm_top_scores : (len(userid), M) global ids and scores from build_warm_cache.
+    source          : optional scores.ItemBlockScores over the COLD block (`cold_ids`). When None,
+                      built from user_factors/cold_factors. The warm side needs no source -- it is
+                      the cache, already scored.
     Returns global ids (len(userid), N).
     """
     import torch
@@ -116,8 +112,8 @@ def cold_merge_recommend(user_factors, cold_factors, cold_ids, cold_global_to_lo
     user_items = user_items.tocsr()
     n = len(userid)
     M = warm_top_ids.shape[1]
-    Vc = _as_gpu(cold_factors, device)                          # (n_cold, f) -- small, resident or transfer
-    n_cold = Vc.shape[0]
+    src = source or FactorItemBlock.from_block(user_factors, cold_factors, device)
+    n_cold = src.n_items
     # The merge score matrix is only (chunk x (M + n_cold)) wide -- ~75x narrower than the warm pool,
     # so the incoming (warm-sized) chunk splits users into far more chunks than necessary. Re-size
     # for the actual width so 193k users go through in ~1-2 chunks instead of ~37.
@@ -126,8 +122,7 @@ def cold_merge_recommend(user_factors, cold_factors, cold_ids, cold_global_to_lo
 
     for start in range(0, n, chunk):
         stop = min(start + chunk, n)
-        uf = _gather_rows(user_factors, userid[start:stop], device)   # this chunk's user factors
-        cold_s = uf @ Vc.T  # (b, n_cold)
+        cold_s = src.user_scores(userid[start:stop])  # (b, n_cold)
 
         # mask each user's already-revealed cold items, vectorized (no per-user Python loop -- this
         # loop ran over all 193k eval users on every (seed, k) call and was Mode A's real bottleneck)
@@ -156,7 +151,7 @@ def cold_merge_recommend(user_factors, cold_factors, cold_ids, cold_global_to_lo
 
 
 def mode_a_auc(user_factors, item_factors, candidate_ids, global_to_local,
-               userid, user_items, test_items, device="cuda:0", chunk=512):
+               userid, user_items, test_items, device="cuda:0", chunk=512, source=None):
     """Per-user pairwise AUC over the candidate pool -- the full-ranking companion to topk_recommend.
 
     AUC never needed the dense n_users x n_items score matrix (which does not fit at Amazon-Books
@@ -182,7 +177,14 @@ def mode_a_auc(user_factors, item_factors, candidate_ids, global_to_local,
     userid          : 1-D array of user ids.
     user_items      : CSR (len(userid) x n_items), row i = items to EXCLUDE for userid[i] (already-liked
                       / revealed) -- same row-alignment topk_recommend uses.
-    test_items      : CSR (len(userid) x n_items), row i = held-out positives for userid[i].
+    test_items      : CSR (len(userid) x n_items), row i = held-out positives for userid[i]. MUST be
+                      disjoint from user_items: a positive's score is read AFTER the -inf masking, so
+                      a pair appearing in both would be ranked as -inf and silently drag the AUC down.
+                      load.py guarantees disjointness (a cold item's last-`test_size` test users are
+                      disjoint from its first-`n_reveal` revealed users, and ref_train is all-warm),
+                      so this is a contract on callers, not a case to handle. bench_16 relies on it.
+    source          : optional scores.ItemBlockScores over `candidate_ids`; built from the factors
+                      when None.
     Returns (len(userid),) float64 AUC per user; NaN where a user has no in-pool positive or no negative.
     """
     import torch
@@ -192,16 +194,15 @@ def mode_a_auc(user_factors, item_factors, candidate_ids, global_to_local,
     test_items = test_items.tocsr()
     n_query = len(userid)
 
-    V = _gather_rows(item_factors, candidate_ids, device)        # (C, f) candidate factors
-    C = V.shape[0]
+    src = source or FactorItemBlock(user_factors, item_factors, candidate_ids, device)
+    C = src.n_items
 
     auc = np.full(n_query, np.nan, dtype=np.float64)
 
     for start in range(0, n_query, chunk):
         stop = min(start + chunk, n_query)
         b = stop - start
-        uf = _gather_rows(user_factors, userid[start:stop], device)
-        scores = uf @ V.T                                        # (b, C)
+        scores = src.user_scores(userid[start:stop])             # (b, C)
 
         # Exclude each user's already-liked/revealed items (in-pool only), and count them per user:
         # excluded items are pinned to -inf so they sort to the bottom, then subtracted from ranks.
@@ -252,7 +253,7 @@ def mode_a_auc(user_factors, item_factors, candidate_ids, global_to_local,
 
 def mode_a_auc_sweep(user_factors, warm_factors, cold_factors_by_k, warm_global_to_local,
                      cold_global_to_local, userid, warm_excl_csr, cold_excl_csr_by_k, test_csr,
-                     device="cuda:0", chunk=512):
+                     device="cuda:0", chunk=512, warm_source=None, cold_sources_by_k=None):
     """Cached Mode A candidate-pool AUC across reveal levels -- the sweep fast path for mode_a_auc.
 
     Within a seed the WARM factors are frozen across the whole reveal sweep, so each user's warm
@@ -279,31 +280,39 @@ def mode_a_auc_sweep(user_factors, warm_factors, cold_factors_by_k, warm_global_
     warm_excl_csr      : CSR (n_query x n_items) frozen warm exclusions (ref_train), row-aligned.
     cold_excl_csr_by_k : list over k of CSR (n_query x n_items) cold exclusions (revealed at k).
     test_csr           : CSR (n_query x n_items) held-out cold positives, row-aligned.
+    warm_source        : optional scores.ItemBlockScores over the warm block; built from
+                         user_factors/warm_factors when None.
+    cold_sources_by_k  : optional list over k of scores.ItemBlockScores over the cold block; built
+                         from user_factors/cold_factors_by_k when None. Supplying these is how a
+                         non-bilinear method (CBHCF) reuses this sweep -- the warm block is scored
+                         and sorted once because it is k-invariant for ANY method whose warm-side
+                         representation is frozen, which is the same property ALS relies on here.
     Returns (n_k, n_query) float64 AUC per (level, user); NaN where a user has no in-pool positive/negative.
     """
     import torch
 
     userid = np.atleast_1d(np.asarray(userid))
     n_query = len(userid)
-    n_k = len(cold_factors_by_k)
     warm_excl_csr = warm_excl_csr.tocsr()
     test_csr = test_csr.tocsr()
     cold_excl = [c.tocsr() for c in cold_excl_csr_by_k]
 
-    Vw = _as_gpu(warm_factors, device)                          # (n_warm, f) frozen
-    n_warm = Vw.shape[0]
-    Vc_by_k = [_as_gpu(cf_k, device) for cf_k in cold_factors_by_k]
-    n_cold = Vc_by_k[0].shape[0]
+    warm_src = warm_source or FactorItemBlock.from_block(user_factors, warm_factors, device)
+    cold_srcs = cold_sources_by_k or [FactorItemBlock.from_block(user_factors, cf_k, device)
+                                      for cf_k in cold_factors_by_k]
+    n_k = len(cold_srcs)
+    n_warm = warm_src.n_items
+    n_cold = cold_srcs[0].n_items
 
     out = np.full((n_k, n_query), np.nan, dtype=np.float64)
 
     for start in range(0, n_query, chunk):
         stop = min(start + chunk, n_query)
         b = stop - start
-        uf = _gather_rows(user_factors, userid[start:stop], device)      # (b, f)
+        users_chunk = userid[start:stop]
 
         # --- warm block: score, exclude ref_train warm (frozen), sort ONCE, reuse across all k ---
-        sw = uf @ Vw.T                                                    # (b, n_warm)
+        sw = warm_src.user_scores(users_chunk)                            # (b, n_warm)
         wl = warm_excl_csr.indices[warm_excl_csr.indptr[start]:warm_excl_csr.indptr[stop]]
         wloc = warm_global_to_local[wl]
         wur = np.repeat(np.arange(b), np.diff(warm_excl_csr.indptr[start:stop + 1]))
@@ -317,7 +326,7 @@ def mode_a_auc_sweep(user_factors, warm_factors, cold_factors_by_k, warm_global_
         n_warm_neg = (n_warm - n_excl_warm).astype(np.int64)             # frozen across k
 
         for ki in range(n_k):
-            sc = uf @ Vc_by_k[ki].T                                      # (b, n_cold)
+            sc = cold_srcs[ki].user_scores(users_chunk)                  # (b, n_cold)
             ce = cold_excl[ki]
             cl = ce.indices[ce.indptr[start]:ce.indptr[stop]]
             cloc = cold_global_to_local[cl]
@@ -367,7 +376,8 @@ def mode_a_auc_sweep(user_factors, warm_factors, cold_factors_by_k, warm_global_
     return out
 
 
-def mode_b_topk_users(user_factors, cold_factors, cold_revealed_csc, N, device="cuda:0", item_chunk=256):
+def mode_b_topk_users(user_factors, cold_factors, cold_revealed_csc, N, device="cuda:0",
+                      item_chunk=256, source=None):
     """Mode B (item -> user): for each cold item, rank ALL users by predicted affinity and return
     its ordered top-N non-revealed users.
 
@@ -380,23 +390,21 @@ def mode_b_topk_users(user_factors, cold_factors, cold_revealed_csc, N, device="
     user_factors      : (n_users, f) frozen user factors.
     cold_factors      : (n_cold, f) folded cold-item factors at the current reveal level.
     cold_revealed_csc : (n_users, n_cold) CSC; column j = users already revealed for cold item j.
+    source            : optional scores.UserBlockScores; built from the factors when None.
     Returns (n_cold, N) global user ids, ordered by descending score, -1-padded if fewer than N.
     """
     import torch
 
-    n_users = user_factors.shape[0]
-    n_cold = cold_factors.shape[0]
-    Uf = _as_gpu(user_factors, device)                          # (n_users, f) resident (once/seed) or transferred
-    Cf_all = _as_gpu(cold_factors, device)                      # (n_cold, f) -- small
+    src = source or FactorUserBlock(user_factors, cold_factors, device)
+    n_users, n_cold = src.n_users, src.n_items
     N_eff = min(N, n_users)
     out = np.full((n_cold, N), -1, dtype=np.int64)
 
     for s in range(0, n_cold, item_chunk):
         e = min(s + item_chunk, n_cold)
-        Cf = Cf_all[s:e]                                        # (c, f)
         # Items as ROWS, users as columns, so the top-K runs along the contiguous (user) axis --
         # top-K along a strided axis is several times slower on the GPU.
-        scores = Cf @ Uf.T                                          # (c, n_users)
+        scores = src.item_scores(s, e)                              # (c, n_users)
 
         rev = cold_revealed_csc[:, s:e].tocoo()                     # row=user, col=item-local
         if rev.nnz:
@@ -410,7 +418,7 @@ def mode_b_topk_users(user_factors, cold_factors, cold_revealed_csc, N, device="
 
 
 def mode_b_auc(user_factors, cold_factors, cold_test_csc, cold_revealed_csc,
-               device="cuda:0", item_chunk=64):
+               device="cuda:0", item_chunk=64, source=None):
     """Per-cold-item AUC over the full user population (Mode B) -- the full-ranking companion to
     mode_b_topk_users, transposed onto the user axis.
 
@@ -429,14 +437,13 @@ def mode_b_auc(user_factors, cold_factors, cold_test_csc, cold_revealed_csc,
     cold_factors      : (n_cold, f) folded cold-item factors at the current reveal level.
     cold_test_csc     : (n_users, n_cold) CSC; column j = reserved test users (positives) for item j.
     cold_revealed_csc : (n_users, n_cold) CSC; column j = revealed users (excluded) for item j at k.
+    source            : optional scores.UserBlockScores; built from the factors when None.
     Returns (n_cold,) float64 AUC per cold item; NaN where the item has no positive or no negative.
     """
     import torch
 
-    Uf = _as_gpu(user_factors, device)                          # (n_users, f)
-    n_users = Uf.shape[0]
-    Cf_all = _as_gpu(cold_factors, device)                      # (n_cold, f)
-    n_cold = Cf_all.shape[0]
+    src = source or FactorUserBlock(user_factors, cold_factors, device)
+    n_users, n_cold = src.n_users, src.n_items
     test_csc = cold_test_csc.tocsc()
     rev_csc = cold_revealed_csc.tocsc()
 
@@ -445,7 +452,7 @@ def mode_b_auc(user_factors, cold_factors, cold_test_csc, cold_revealed_csc,
     for s in range(0, n_cold, item_chunk):
         e = min(s + item_chunk, n_cold)
         c = e - s
-        scores = Cf_all[s:e] @ Uf.T                             # (c, n_users) items as rows
+        scores = src.item_scores(s, e)                          # (c, n_users) items as rows
 
         # Positives (reserved test users) per local item -> padded (c, max_pos). Capture their scores
         # BEFORE masking revealed (positives are disjoint from revealed by construction).
