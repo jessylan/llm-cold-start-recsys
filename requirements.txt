@@ -35,4 +35,3 @@ wandb==0.26.1          # Experiment tracking for the warm-up sweeps (Sections 9-
 ipykernel==7.3.0       # Registers this venv as a selectable Jupyter kernel.
 jupyterlab==4.6.1      # Local notebook UI. Drop this line if you launch from VS Code/another host.
 ipywidgets==8.1.8      # Live tqdm progress bars in the notebook (silences the IProgress warning).
-jupytext==1.19.4       # Pairs baseline_steel_thread_cf.py (source of truth) <-> .ipynb; `jupytext --sync`.
