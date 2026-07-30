@@ -25,7 +25,7 @@ from recsys.protocol import RetrievalModel
 def load_provider_metadata(books_meta_path, movies_meta_path):
     """Load books_meta_common.parquet and movies_meta_common.parquet and return a single
     Series: item_id -> provider_id, using the movie_ / book_ prefixed item_id convention from
-    data_cleaning.ipynb's unified item table.
+    data_cleaning.ipynb's unified item table. <-- NOTE - deprecated. To be updated in a future commit. 
 
     Books use author_name; movies use store -- main_category/categories describe what an item
     *is* (genre/type), not who *made* it, so they'd conflate content-type equity with provider
