@@ -17,10 +17,9 @@ It cleans and combines ratings, then creates standard and cold-start evaluation 
 
 2. Place the raw files in the locations shown under **Project structure**.
 3. Run `notebooks/data_filtering.ipynb`. 
-4. Run `notebooks/data_cleaning.ipynb`. # NOTE - may need rework after adding `data_filtering.ipynb` - to be addressed soon
-5. Run `notebooks/train_test_split.ipynb`. # NOTE - may need rework after adding `data_filtering.ipynb` - to be addressed soon
-6. Use `outputs/load_sample.csv` for shared development and testing. Use the full
-   `outputs/load.csv` only for full-scale local runs.
+4. Run `notebooks/hyperparameter_tuning.ipynb`.
+5. Run `notebooks/baseline_steel_thread_cf.ipynb` after step `4` completes, or this will fallback to untuned `lambda=1`.
+
 
 The notebooks use project-relative paths and can be run from VS Code or Jupyter.
 
@@ -52,6 +51,7 @@ Raw Amazon data
 |   `-- initial_pipeline_design/        # baseline and architecture artifacts
 |-- notebooks/
 |   |-- baseline_steel_thread_cf.ipynb  # how-to for recsys modules
+|   |-- hyperparameter_tuning.ipynb     # selects CBHCF's lambda on the cold-item VALIDATION set
 |   |-- data_cleaning.ipynb
 |   |-- data_filtering.ipynb            # filtering reviews datasets and metadata as well
 |   `-- train_test_split.ipynb
@@ -60,12 +60,16 @@ Raw Amazon data
 |   |-- load_sample.csv
 |   `-- metadata_sample.csv
 |-- recsys/
-|   |-- __init__.py                     # 
-|   |-- cf.py                           # pure collaborative filtering baseline model
-|   |-- eval.py                         # evaluation harness
-|   |-- load.py                         # load the data (currently MovieLens-100k)
-|   |-- pop.py                          # popularity and activity baseline models
-|   `-- protocol.py                     # defines the `RetrievalModel` class which `eval.py` uses to ensure models are correctly built 
+|   |-- __init__.py                     # pins the BLAS thread pool to 1 (implicit does its own parallelism)
+|   |-- load.py                         # Amazon Books loader; the 80/10/10 warm / cold-val / cold-test split
+|   |-- protocol.py                     # `RetrievalModel` -- the fit/recommend/fold_in contract `eval.py` relies on
+|   |-- pop.py                          # popularity and activity baseline models (the floors)
+|   |-- cf.py                           # ALS collaborative filtering baseline
+|   |-- content.py                      # item content vectors: role-based fields, BM25F weighted blocks
+|   |-- cbhcf.py                        # content-based hybrid CF -- ALS score + weighted content score
+|   |-- scores.py                       # score sources: the interface `gpu_retrieval` consumes instead of factors
+|   |-- gpu_retrieval.py                # exact GPU top-K, candidate-pool AUC, and the Mode B duals
+|   `-- eval.py                         # evaluation harness: metrics, within-item ceiling, both warm-up sweeps
 |-- .gitignore
 `-- README.md
 ```
@@ -98,18 +102,6 @@ sample CSVs are committed so collaborators can test the workflow and inspect the
 schema immediately. `clean_sample.csv`/`load_sample.csv` contain 100,000 rows: 10,000
 movie and 10,000 book rows from each standard and cold-start split. `metadata_sample.csv`
 is a 100,000-row random sample of `metadata.csv`.
-
-### Known limitation: books have no metadata yet
-
-`metadata.csv`/`metadata_sample.csv` only have real `title`/`genre`/`description` for
-**movies**, pulled from `meta_Movies_and_TV.jsonl.gz`. Book rows are blank stubs (one
-per rated `parent_asin` in `Books.csv.gz`) because **no book metadata file is in the
-pipeline yet**. The official book metadata file, `meta_Books.jsonl.gz`, exists but is
-4.9 GB compressed (vs. 271 MB for movies) and hasn't been downloaded or wired in. Until
-that happens, books have no title/genre/description for content-based features.
-
-`genre` and `description` are `" | "`-joined plain text, flattened from the raw JSON
-arrays Amazon's schema stores them as (not a Python list's string repr).
 
 ## design_documents folder
 ### initial_pipeline_design

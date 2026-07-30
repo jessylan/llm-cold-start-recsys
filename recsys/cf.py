@@ -20,6 +20,8 @@ import copy
 import numpy as np
 from implicit.als import AlternatingLeastSquares
 
+from recsys.load import dataset_fingerprint
+
 
 class ALSModel:
     """Wraps implicit.als.AlternatingLeastSquares to satisfy protocol.RetrievalModel."""
@@ -57,6 +59,10 @@ class ALSModel:
         # recommend/score calls gather from VRAM instead of re-transferring factors each call.
         self._uf_gpu = None
         self._itf_gpu = None
+        # Memoized cold-block fold-ins, keyed by (dataset fingerprint, level). See
+        # _cold_factors. Folded models share the dict by copy.copy, which is fine --
+        # they never fold again.
+        self._fold_cache = {}
 
     def fit(self, train_matrix, show_progress: bool = False) -> "ALSModel":
         self._model = AlternatingLeastSquares(**self._params)
@@ -211,11 +217,70 @@ class ALSModel:
             cache["ids"], cache["scores"], eval_users, user_items, N,
             device=self._device, chunk=self._gpu_chunk)
 
-    def _fold_in_with(self, item_ids, item_users):
+    # --- Score sources (see scores.py) -----------------------------------------------------------
+    # eval.py asks a model for these instead of reaching into its factors, so a method whose score is
+    # NOT user_factors @ item_factors.T -- CBHCF's per-item blend, and the interventions after it --
+    # plugs into the same sweeps. For ALS each one is a thin wrapper around the factor product.
+    # Call them on whichever model holds the right item factors: the base model for the frozen warm
+    # block, a folded model for the cold block at reveal level k.
+
+    def _resident_user_factors(self):
+        """The GPU-resident user factors if load_factors_gpu() has been called, else the numpy
+        array. A folded model shares the base's `_uf_gpu` -- fold-in never touches user factors."""
+        return self._uf_gpu if self._uf_gpu is not None else self.user_factors
+
+    def cold_block_source(self):
+        """Scores over the cold items, at this model's (possibly folded) item factors."""
+        from recsys import scores
+        return scores.FactorItemBlock.from_block(
+            self._resident_user_factors(), self.item_factors[self._cold_ids], self._device)
+
+    def warm_auc_source(self):
+        """Scores over the WARM block of the degree-matched AUC pool. Frozen across the reveal
+        sweep, which is what lets mode_a_auc_sweep sort it once and reuse it for every k."""
+        from recsys import scores
+        return scores.FactorItemBlock.from_block(
+            self._resident_user_factors(), self.item_factors[self._auc_warm_ids], self._device)
+
+    def auc_pool_source(self):
+        """Scores over the full degree-matched AUC pool (warm degree >= auc_min_degree, plus cold)."""
+        from recsys import scores
+        return scores.FactorItemBlock(
+            self._resident_user_factors(), self.item_factors, self._auc_candidate_ids, self._device)
+
+    def mode_b_source(self):
+        """Mode B: this model's cold items x the whole user population."""
+        from recsys import scores
+        return scores.FactorUserBlock(
+            self._resident_user_factors(), self.item_factors[self._cold_ids], self._device)
+
+    def clear_fold_cache(self) -> "ALSModel":
+        """Drop the memoized fold-in factors. Worth calling once a hyperparameter search is done --
+        the cache only pays for itself when the same (dataset, level) is folded repeatedly."""
+        self._fold_cache = {}
+        return self
+
+    def _cold_factors(self, cache_key, build):
+        """Memoized `recalculate_item` output for the cold block, as (item_ids, factors).
+
+        Fold-ins depend only on the dataset and the reveal level -- never on anything downstream --
+        so a sweep that re-folds the same levels (a lambda search re-running the sweep per candidate
+        value, say) recomputes an identical closed-form solve every time. Only the COLD rows are
+        memoized: 2,727 x 64 floats is ~700 KB per level, where caching whole folded models would be
+        ~125 MB each. The `build` thunk is not called on a hit, which also skips
+        `revealed_item_users_at_k`'s Python-loop matrix construction.
+        """
+        hit = self._fold_cache.get(cache_key)
+        if hit is None:
+            item_ids, item_users = build()
+            hit = (item_ids, self._model.recalculate_item(item_ids, item_users))
+            self._fold_cache[cache_key] = hit
+        return hit
+
+    def _fold_in_with(self, item_ids, folded_item_factors):
         """Returns a NEW ALSModel with cold items' item_factors rows replaced by the fold-in factor
-        from `item_users` (via recalculate_item's exact closed-form solve), without mutating self.
-        User factors are never touched. Shared by fold_in (reveal level k) and fold_in_ceiling."""
-        folded_item_factors = self._model.recalculate_item(item_ids, item_users)
+        (from recalculate_item's exact closed-form solve), without mutating self. User factors are
+        never touched. Shared by fold_in (reveal level k) and fold_in_ceiling."""
         factors = self.item_factors.copy()
         factors[item_ids] = folded_item_factors
 
@@ -236,12 +301,13 @@ class ALSModel:
         vector's dot product with any user factor is exactly zero, so the item cannot outrank
         anything.
         """
-        item_ids, item_users = dataset.revealed_item_users_at_k(k)
-        return self._fold_in_with(item_ids, item_users)
+        key = (dataset_fingerprint(dataset), "k", int(k))
+        return self._fold_in_with(*self._cold_factors(
+            key, lambda: dataset.revealed_item_users_at_k(k)))
 
     def fold_in_ceiling(self, dataset):
         """Within-item warm reference: fold every cold item in with ALL its pre-test interactions
         (dataset.ceiling_pool) -- the item's own fully-warm state, evaluated on the same
         last-test_size reserved test the warm-up curve uses (degree-matched by construction)."""
-        item_ids, item_users = dataset.ceiling_item_users()
-        return self._fold_in_with(item_ids, item_users)
+        key = (dataset_fingerprint(dataset), "ceiling")
+        return self._fold_in_with(*self._cold_factors(key, dataset.ceiling_item_users))
