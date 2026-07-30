@@ -7,8 +7,8 @@ torch.topk -- a radix *select* -- is ~490x, exact, ~2 min for the full catalog).
 the GPU (user_factors @ item_factors.T) and select with torch.topk.
 
 Candidate set (D1): we score against a restricted item set (the caller's `candidate_ids` --
-warm-retained + cold items, ~388k of the 2.8M) rather than all item_factors rows. The ~2.4M
-items dropped by the sparsity pre-filter carry near-zero (regularized) factors and effectively
+warm-retained + cold items) rather than all item_factors rows. The items dropped by load.py's
+`min_interactions_warm` sparsity pre-filter carry near-zero (regularized) factors and effectively
 never enter a top-100, so this is near-exact vs implicit's full-catalog scoring; the parity check
 (bench_7) quantifies any divergence. Restricting also keeps the score matrix chunk-sized in VRAM.
 
@@ -96,7 +96,7 @@ def cold_merge_recommend(user_factors, cold_factors, cold_ids, cold_global_to_lo
 
     This is the k-sweep fast path (report S8(b)): the warm block of the score is invariant across
     reveal levels within a seed, so warm_top_ids/warm_top_scores (per-user cached top-M, M>=N) are
-    computed once; here we only score the ~5k cold items at the current fold-in level, mask each
+    computed once; here we only score the cold block at the current fold-in level, mask each
     user's revealed cold items, and re-select N over the (warm top-M) + (cold) union. Correct
     because a warm item outside the warm top-M can never enter the final top-N.
 
@@ -158,7 +158,7 @@ def mode_a_auc(user_factors, item_factors, candidate_ids, global_to_local,
     scale): it only needs, per user, where that user's held-out positives rank among the
     candidates. That's the same uf @ V.T score row topk_recommend already computes -- here we take a
     full *rank* of it instead of a top-K select, so it runs at Amazon-Books scale with no dense
-    allocation. Ranking is over `candidate_ids` (the warm_cold retrieval pool), NOT the full 2.8M
+    allocation. Ranking is over `candidate_ids` (the warm_cold retrieval pool), NOT the full item
     catalog -- this is the entire, deterministic candidate set we retrieve from, not a random sample,
     so it sidesteps the Krichene-Rendle sampled-metric inconsistency (that critique is about small
     random negative samples). Report it as "AUC (candidate pool)".
@@ -257,12 +257,12 @@ def mode_a_auc_sweep(user_factors, warm_factors, cold_factors_by_k, warm_global_
     """Cached Mode A candidate-pool AUC across reveal levels -- the sweep fast path for mode_a_auc.
 
     Within a seed the WARM factors are frozen across the whole reveal sweep, so each user's warm
-    score row is invariant; only the ~5k cold columns change per k. This sorts each user's warm
+    score row is invariant; only the cold columns change per k. This sorts each user's warm
     scores ONCE and reuses them for every level (searchsorted to count warm negatives below a cold
-    positive), re-ranking only the small cold block per k. That turns L full 388k-wide sorts per
-    chunk into ONE warm sort + L cheap 5k-wide sorts (L = len(k_levels)) -- the same amortization
-    sweep_mode_a_cached does for top-K. Produces the identical per-user AUC as calling mode_a_auc at
-    each k (verified bench_14).
+    positive), re-ranking only the small cold block per k. That turns L full warm-pool-wide
+    sorts per chunk into ONE warm sort + L cheap cold-block-wide sorts (L = len(k_levels)) --
+    the same amortization sweep_mode_a_cached does for top-K. Produces the identical per-user AUC as
+    calling mode_a_auc at each k (verified bench_14).
 
     Loop nesting is chunk-outer / k-inner ON PURPOSE: a chunk's (chunk x n_warm) sorted warm scores
     live only while that chunk is processed, never all users at once (which would be ~300 GB here).

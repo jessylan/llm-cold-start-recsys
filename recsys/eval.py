@@ -41,9 +41,10 @@ def mode_a_metrics_at_k(model, train_matrix, test_matrix, K=100):
 
     Two savings folded into one function, since they compose. (1) A user with zero test items
     contributes nothing to any of these macro-averaged metrics -- scoring them via recommend()
-    is pure wasted work, exact to skip (not an approximation). On this dataset's cold-item test
-    set, only 193,456 of 2,531,146 users (7.6%) have >=1 test item -- ~13x fewer recommend()
-    calls. (2) NDCG used to come from a second, separate call to implicit.evaluation.ndcg_at_k,
+    is pure wasted work, exact to skip (not an approximation). On the cold-item test set the
+    eval-user count is bounded by dataset.test_matrix.nnz (test_size per cold item), a small
+    fraction of n_users -- so the saving scales with that ratio, not a fixed factor.
+    (2) NDCG used to come from a second, separate call to implicit.evaluation.ndcg_at_k,
     which duplicates exactly the recommend() call this function already needs -- computing NDCG
     directly here (same DCG/IDCG formula used in the Mode B metrics)
     means ONE recommend() call serves all four metrics instead of two. Confirmed empirically
@@ -260,7 +261,7 @@ def sweep(models, dataset, k_levels, K=100):
 def sweep_mode_a_cached(models, dataset, k_levels, K=100, verbose=True, with_auc=True):
     """Cached Mode-A warm-up sweep for GPU warm_cold ALS models (report S8(b)). Builds each seed's
     warm top-N once (warm factors are frozen across the reveal sweep) and reuses it for every k,
-    scoring only the ~5k cold items per level. Produces the identical NDCG/Precision/Recall/HitRate
+    scoring only the cold items (len(dataset.cold_item_ids)) per level. Produces the identical NDCG/Precision/Recall/HitRate
     curve as sweep() -- verified bit-for-bit by bench_8 (metrics) and bench_8b (recommended ids) --
     at ~L-fold less recommend work (L = number of k-levels). Requires models prepared with
     candidates='warm_cold' (build_warm_cache / recommend_cached on cf.ALSModel).

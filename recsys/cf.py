@@ -134,12 +134,13 @@ class ALSModel:
         any recommend(); fold_in() carries the config to folded models.
 
         candidates:
-          "warm_cold" (default) -- score only warm (nonzero cols of ref_train) + cold items
-                         (~388k). The correct candidate pool -- never recommends an item that was
+          "warm_cold" (default) -- score only warm (nonzero cols of ref_train) + cold items.
+                         The correct candidate pool -- never recommends an item that was
                          never trained. Enables the k-sweep warm cache (build_warm_cache).
-          "all"       -- score every item, i.e. also the ~2.4M sparsity-dropped items that keep
+          "all"       -- score every item, i.e. also the sparsity-dropped items that keep
                          their random init. This reproduces implicit.recommend() bit-for-bit
-                         (bench_7), which is the only reason to use it; ~7x heavier and no caching.
+                         (bench_7), which is the only reason to use it; several times heavier,
+                         and no caching.
 
         chunk: users scored per GPU batch; if None, auto-sized to ~vram_budget_gb of score matrix.
         """
