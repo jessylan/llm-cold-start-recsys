@@ -23,6 +23,11 @@ It cleans and combines ratings, then creates standard and cold-start evaluation 
 3. Run `notebooks/data_filtering.ipynb`.  
 4. Run `notebooks/hyperparameter_tuning.ipynb`. Skippable — `outputs/hyperparams.json` is committed.
 5. Run `notebooks/steel_thread.ipynb` It reads `outputs/hyperparams.json`; if that file is missing it falls back to untuned `lambda=1`.
+6. **(Optional, GPU only)** Run `notebooks/intervention_b_coldllm.ipynb` — ColdLLM-style
+   synthetic interactions for cold-start items; see
+   [design_documents/07-intervention-b-coldllm.md](design_documents/07-intervention-b-coldllm.md).
+   Needs step 5 to have run at least once (it reuses `steel_thread.ipynb`'s cached CBHCF
+   baseline and content cache) plus a CUDA GPU with `vllm` installed separately.
 
 The notebooks use project-relative paths and can be run from VS Code or Jupyter.
 
@@ -55,7 +60,8 @@ Dataset  (interaction matrix + warm / cold-val / cold-test splits, built in memo
 |-- notebooks/
 |   |-- data_filtering.ipynb            # filtering reviews datasets and metadata as well
 |   |-- hyperparameter_tuning.ipynb     # selects CBHCF's lambda on the cold-item VALIDATION set
-|   `-- steel_thread.ipynb              # how-to for recsys modules
+|   |-- steel_thread.ipynb              # how-to for recsys modules
+|   `-- intervention_b_coldllm.ipynb    # Intervention B: ColdLLM-style synthetic interactions (needs vLLM + GPU)
 |-- outputs/
 |   `-- hyperparams.json                # Tuned lambda for CBHCF model - output of `hyperparameter_tuning.ipynb`
 |-- recsys/
@@ -69,7 +75,8 @@ Dataset  (interaction matrix + warm / cold-val / cold-test splits, built in memo
 |   |-- scores.py                       # score sources: the interface `gpu_retrieval` consumes instead of factors
 |   |-- gpu_retrieval.py                # exact GPU top-K, candidate-pool AUC, and the Mode B duals
 |   |-- eval.py                         # evaluation harness: metrics, within-item ceiling, both warm-up sweeps
-|   `-- equity_metrics.py               # provider-side fairness metrics — Gini, catalog share, equity ratio
+|   |-- equity_metrics.py               # provider-side fairness metrics — Gini, catalog share, equity ratio
+|   `-- coldllm.py                      # Intervention B: ColdLLM-style synthetic interaction generation (vLLM, GPU-only)
 |-- .gitignore
 |-- README.md
 `-- requirements.txt
@@ -105,7 +112,7 @@ design record** from the project's first architecture.
 
 ### Component documentation (current)
 
-Six Mermaid diagrams, each named for the question it answers rather than the component it
+Seven Mermaid diagrams, each named for the question it answers rather than the component it
 covers. Every node is a real symbol and every table row points at `file:line`, so a diagram
 can be checked against the code rather than trusted. Start at
 [`README.md`](design_documents/README.md), which indexes them.
@@ -118,6 +125,7 @@ can be checked against the code rather than trusted. Start at
 | [04-cbhcf-score-composition.md](design_documents/04-cbhcf-score-composition.md) | How does CBHCF combine ALS and content? |
 | [05-what-metrics-mean.md](design_documents/05-what-metrics-mean.md) | What does this accuracy number mean? |
 | [06-provider-equity.md](design_documents/06-provider-equity.md) | Who gets exposure, and how do we turn it on? |
+| [07-intervention-b-coldllm.md](design_documents/07-intervention-b-coldllm.md) | How does Intervention B generate synthetic interactions for cold items? |
 
 Docs 05 and 06 each end with a **Drift** section (places where prose contradicts the code,
 reported but not fixed) and an **Open questions** section (things not determinable from

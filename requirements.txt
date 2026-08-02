@@ -31,6 +31,13 @@ threadpoolctl==3.6.0   # Controls BLAS thread count; keeps implicit's OpenBLAS w
 matplotlib==3.11.0     # Warm-up curve plot (Section 9).
 wandb==0.26.1          # Experiment tracking for the warm-up sweeps (Sections 9-10).
 
+# NOTE: recsys/coldllm.py (Intervention B) imports `vllm` directly (`from vllm import LLM`) to
+# run two in-process engines for Filtering/Refining Simulation. Like `torch` (needed by
+# recsys/gpu_retrieval.py), `vllm` is CUDA-only and not installed via this Mac/arm64
+# requirements file -- install it separately in whatever GPU environment actually runs
+# notebooks/intervention_b_coldllm.ipynb (`pip install vllm`, version pinned to that machine's
+# CUDA toolkit).
+
 # --- Notebook runtime --------------------------------------------------------
 ipykernel==7.3.0       # Registers this venv as a selectable Jupyter kernel.
 jupyterlab==4.6.1      # Local notebook UI. Drop this line if you launch from VS Code/another host.
