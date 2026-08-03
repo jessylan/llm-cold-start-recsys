@@ -10,30 +10,28 @@ accumulated a single real interaction, which is exactly the case
 sweep show ALS's `recalculate_item` cannot help with at all (its closed-form solve returns the
 exact zero vector at `k=0`).
 
-Both stages run against the **same LLM**, in-process via vLLM (`from vllm import LLM`, not a
-server) — Filtering uses it in `task="embed"` mode (mean-pooled token embeddings), Refining in
-`task="generate"` mode. This matches the paper's own design (Sec 4.2.1): it does not use a
-dedicated embedding model either. `recsys/coldllm.py` implements it; the notebook that drives
-it is `notebooks/intervention_b_coldllm.ipynb`.
-
 **Two Refining prompting strategies share one code path and one notebook run**, forking only at
 the Refining stage: **B1 (direct)** asks the bare yes/no question with choice-constrained
 decoding; **B2 (reasoning)** asks for a one-sentence justification first, with regex-constrained
 decoding. Everything upstream (dataset, cached CBHCF baseline, item metadata, Filtering) and
-downstream (the comparison) is shared and computed once — see the notebook's Section headers in
-the table below.
+downstream (the comparison) is shared and computed once — see
+`notebooks/intervention_b_coldllm.ipynb`'s Section headers.
 
 ```mermaid
 flowchart TD
-    META["item_metadata: one string per item<br/>title+creator+taxonomy+blurb+reviews<br/>(Section 3)"] -->|"embed_texts<br/>mean-pooled token embeddings"| IE["item_embeddings<br/>(n_items x hidden_dim)"]
-    TRAIN["dataset.ref_train"] -->|"user_preference_embeddings<br/>mean of a user's history items"| UE["user_embeddings<br/>(n_users x hidden_dim)"]
+    DOCS["docs: role -> per-item text<br/>(Section 3)"] -->|"flatten to one string/item"| META["item_metadata<br/>feeds LLM prompts only"]
+    DOCS -->|"content.fit_content_space<br/>+ .transform (warm-fit, inductive)"| TFIDF["item_content: n_items x n_terms<br/>L2-normalized rows -- SAME matrix CBHCF uses"]
 
-    IE --> FC["filter_candidates<br/>brute-force inner product, top_k=50<br/>(Section 4 -- runs ONCE)"]
-    UE --> FC
+    TRAIN["dataset.ref_train"] -->|"_row_scaled<br/>(same op as cbhcf._row_scaled)"| HIST["row-scaled history"]
+    HIST -->|"@ item_content"| PROF["user_content_profile<br/>(n_users x n_terms), sparse"]
+    TFIDF --> PROF
+
+    TFIDF --> FC["filter_candidates<br/>sparse inner product = cosine sim, top_k=50<br/>(Section 4 -- NO LLM, runs ONCE)"]
+    PROF --> FC
     COLD["dataset.cold_item_ids"] --> FC
     FC --> CAND["candidates: item_idx -> top-K user_idx<br/>SHARED by both prompting strategies"]
 
-    CAND --> RC["refine_candidates<br/>loop over STRATEGIES (Section 5)"]
+    CAND --> RC["refine_candidates<br/>loop over STRATEGIES (Section 5, LLM via vLLM)"]
     META --> RC
     TRAIN --> RC
 
@@ -43,8 +41,10 @@ flowchart TD
     SB1 --> FIT1["ref_train + synthetic<br/>cf.ALSModel.fit (Section 6)"]
     SB2 --> FIT2["ref_train + synthetic<br/>cf.ALSModel.fit (Section 6)"]
 
-    FIT1 --> CB1["cbhcf.CBHCFModel<br/>reuses steel_thread.ipynb's<br/>item_content + CBHCF_LAMBDA<br/>build_content_cache(path=...)"]
+    FIT1 --> CB1["cbhcf.CBHCFModel<br/>reuses item_content + CBHCF_LAMBDA<br/>build_content_cache(path=...)"]
     FIT2 --> CB2["cbhcf.CBHCFModel<br/>build_content_cache(reuse_from=CB1)<br/>-- no recompute, no disk reload"]
+    TFIDF --> CB1
+    TFIDF --> CB2
 
     AUG1["SyntheticAugmentedDataset<br/>(dataset, synthetic['direct'])"] --> SWEEP1["ev.sweep"]
     AUG2["SyntheticAugmentedDataset<br/>(dataset, synthetic['reasoning'])"] --> SWEEP2["ev.sweep"]
@@ -60,20 +60,16 @@ flowchart TD
 
 | Node | Source | Purpose |
 |---|---|---|
-| `VLLMColdLLMSimulator` | [coldllm.py:31](../recsys/coldllm.py:31) | Two lazily-built vLLM engines loading the SAME model — `generate` for Refining, `embed` (mean pooling) for Filtering. Lazy so a simulator used for only one stage never pays for the other engine's GPU memory. |
-| `embed_llm` / `generate_llm` | [coldllm.py:61](../recsys/coldllm.py:61), [coldllm.py:68](../recsys/coldllm.py:68) | The lazy-construction properties — built on first access, cached after. |
-| `embed_texts` | [coldllm.py:78](../recsys/coldllm.py:78) | Mean-pooled embedding per text, via vLLM's `pooling_type: MEAN` — ColdLLM's Eq. 7, computed by vLLM's pooling engine rather than by hand. |
-| `user_preference_embeddings` | [coldllm.py:137](../recsys/coldllm.py:137) | Mean of a user's training-history item embeddings — same "average a bunch of vectors into one" operation as mean pooling, one level up (items, not tokens). |
-| `filter_candidates` | [coldllm.py:149](../recsys/coldllm.py:149) | Brute-force inner product + `argpartition`, matching the paper's own Eq. 17 (not an approximation chosen for lack of FAISS). |
-| `_build_prompt` | [coldllm.py:169](../recsys/coldllm.py:169) | `reasoning` flag toggles whether a "give a one-sentence reason first" instruction is appended. |
-| `yes_probability` | [coldllm.py:94](../recsys/coldllm.py:94) | The two decoding strategies — see **Two prompting strategies** below. |
-| `_parse_final_answer` | [coldllm.py:192](../recsys/coldllm.py:192) | Pulls the **last** `Answer: yes/no` match out of a reasoning completion (in case the reasoning text itself echoes the word). |
-| `refine_candidates` | [coldllm.py:202](../recsys/coldllm.py:202) | Stage 2 end to end: builds one prompt per surviving pair, thresholds `yes_probability`'s output, returns a sparse synthetic matrix. |
-| `SyntheticAugmentedDataset` | [coldllm.py:246](../recsys/coldllm.py:246) | Wraps `dataset` so `fold_in()` sees synthetic interactions at every `k`, including `k=0` (where `fold_in`'s own closed-form solve would otherwise return zero). |
-| `revealed_item_users_at_k` override | [coldllm.py:284](../recsys/coldllm.py:284) | The **only** method overridden — see **Keeping synthetic data out of the exclusion set** below. |
-| Section 4 (Filtering) | `notebooks/intervention_b_coldllm.ipynb` | Embeds the full catalog and computes `candidates` **once** — Filtering doesn't depend on the Refining prompting strategy at all. |
-| Section 5 (Refining) | `notebooks/intervention_b_coldllm.ipynb` | Loops `STRATEGIES = ["direct", "reasoning"]`, caching each strategy's synthetic matrix under a key that includes the strategy name so they never collide. |
-| Section 6 (warm-up curve) | `notebooks/intervention_b_coldllm.ipynb` | Fits one ALS + `CBHCFModel` per strategy; the second strategy's content cache is borrowed via `reuse_from`, not recomputed. |
+| `_row_scaled` | [coldllm.py:84](../recsys/coldllm.py:84) | Row-normalizes `ref_train` to a user profile; all-zero rows stay zero. Identical operation to `cbhcf._row_scaled` ([cbhcf.py:63](../recsys/cbhcf.py:63)), duplicated rather than imported so this module doesn't depend on cbhcf.py's private helper. |
+| `user_content_profile` | [coldllm.py:93](../recsys/coldllm.py:93) | `_row_scaled(train_matrix) @ item_content` — a user's TF-IDF content profile, the exact computation CBHCF's own user profile uses. |
+| `filter_candidates` | [coldllm.py:99](../recsys/coldllm.py:99) | Sparse-dense inner product (= cosine similarity, since `item_content`'s rows are L2-normalized) + `argpartition`, matching the paper's own Eq. 17 brute-force approach. |
+| `VLLMColdLLMSimulator` | [coldllm.py:31](../recsys/coldllm.py:31) | One vLLM `task="generate"` engine, built at construction and used only by Refining Simulation. |
+| `yes_probability` | [coldllm.py:41](../recsys/coldllm.py:41) | The two decoding strategies — see **Two prompting strategies** below. |
+| `_build_prompt` | [coldllm.py:121](../recsys/coldllm.py:121) | `reasoning` flag toggles whether a "give a one-sentence reason first" instruction is appended. |
+| `_parse_final_answer` | [coldllm.py:144](../recsys/coldllm.py:144) | Pulls the **last** `Answer: yes/no` match out of a reasoning completion (in case the reasoning text itself echoes the word). |
+| `refine_candidates` | [coldllm.py:154](../recsys/coldllm.py:154) | Stage 2 end to end: builds one prompt per surviving pair, thresholds `yes_probability`'s output, returns a sparse synthetic matrix. |
+| `SyntheticAugmentedDataset` | [coldllm.py:198](../recsys/coldllm.py:198) | Wraps `dataset` so `fold_in()` sees synthetic interactions at every `k`, including `k=0` (where `fold_in`'s own closed-form solve would otherwise return zero). |
+| `revealed_item_users_at_k` override | [coldllm.py:236](../recsys/coldllm.py:236) | The **only** method overridden — see **Keeping synthetic data out of the exclusion set** below. |
 | `build_content_cache` / `reuse_from` | [cbhcf.py:164](../recsys/cbhcf.py:164) | The content half of CBHCF's score is independent of the collaborative model, so it's built once and shared across both strategies' `CBHCFModel` instances. |
 | `sweep` | [eval.py:240](../recsys/eval.py:240) | The same warm-up sweep machinery `steel_thread.ipynb` uses, run here against `SyntheticAugmentedDataset` instead of the plain `Dataset`. |
 
@@ -107,16 +103,12 @@ such guarantee, so masking with it would risk silently excluding the exact test-
 measured.
 
 This is why `SyntheticAugmentedDataset` overrides **only** `revealed_item_users_at_k`
-([coldllm.py:284](../recsys/coldllm.py:284)), which `fold_in()` uses to recalculate cold-item
+([coldllm.py:236](../recsys/coldllm.py:236)), which `fold_in()` uses to recalculate cold-item
 factors, and deliberately leaves `revealed_matrix_at_k` untouched — that method is what
 `eval.py` separately uses to build the real-only exclusion matrix.
 
 ## GPU / vLLM requirements
 
-Unlike the rest of this repo, `recsys/coldllm.py` needs a CUDA GPU with `vllm` installed
-separately (`pip install vllm`, version matched to that machine's CUDA toolkit) — it is not
-pinned in `requirements.txt`, which targets the Mac/CPU baseline environment. Each stage in the
-notebook constructs its own `VLLMColdLLMSimulator` and calls only one of
-`embed_texts()`/`refine_candidates()` on it, so lazy construction means only one engine (one
-copy of the model) is ever resident at a time per cell — calling both methods on the *same*
-instance would load the model twice.
+Only Refining Simulation needs a CUDA GPU with `vllm` installed separately
+(`pip install vllm`, version matched to that machine's CUDA toolkit) — it is not pinned in
+`requirements.txt`, which targets the Mac/CPU baseline environment.

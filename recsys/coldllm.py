@@ -29,67 +29,14 @@ _ANSWER_RE = re.compile(r"Answer:\s*(yes|no)", re.IGNORECASE)
 
 
 class VLLMColdLLMSimulator:
-    """Runs two in-process vLLM engines, both loading the SAME model -- one configured for
-    `task="generate"` (Refining Simulation's yes/no), one for `task="embed"` with mean pooling
-    (Filtering Simulation's embeddings). This matches ColdLLM's own design (arXiv:2402.09176,
-    Sec 4.2.1): item/user embeddings for Filtering come from mean-pooling the SAME LLM's token
-    embeddings (Eq. 7: E_llm = (1/n) sum E_token), not a separate embedding model.
+    """Runs Refining Simulation's yes/no judgment as an in-process vLLM `task="generate"`
+    engine. (Filtering Simulation doesn't use an LLM -- see filter_candidates.)
 
-    vLLM fixes one task per engine instance, so the two stages need two instances even though
-    they're the same model. Both are built LAZILY -- only the first time embed_texts() or
-    yes_probability() is actually called, not at construction -- so a simulator used for only
-    one stage (as this module's Filtering/Refining cells each do, via their own separate
-    instance) never pays for the other engine's memory at all. Calling both methods on the SAME
-    instance still ends up with both engines resident at once by the time the second one
-    builds, since nothing here tears the first one down -- prefer two separate instances, one
-    per stage, if that matters. When both ARE resident together, that's the model's weights
-    loaded TWICE (once per engine), i.e. double the GPU memory of a single copy; split
-    `gpu_memory_utilization` between them (e.g. ~0.45 each) if they share one GPU, or run them
-    on separate GPUs via `CUDA_VISIBLE_DEVICES`-scoped processes if that's not workable in one
-    process.
-
-    `**engine_kwargs` passes straight through to both `vllm.LLM(...)` constructors (e.g.
+    `**engine_kwargs` passes straight through to `vllm.LLM(...)` (e.g.
     `gpu_memory_utilization`, `dtype`, `max_model_len`) for tuning to the actual hardware."""
 
     def __init__(self, model: str, **engine_kwargs):
-        self.model = model
-        self._engine_kwargs = engine_kwargs
-        self._generate_llm = None
-        self._embed_llm = None
-
-    @property
-    def generate_llm(self):
-        """Built on first access, not at construction -- see class docstring."""
-        if self._generate_llm is None:
-            self._generate_llm = LLM(model=self.model, task="generate", **self._engine_kwargs)
-        return self._generate_llm
-
-    @property
-    def embed_llm(self):
-        """Built on first access, not at construction -- see class docstring."""
-        if self._embed_llm is None:
-            self._embed_llm = LLM(
-                model=self.model, task="embed",
-                override_pooler_config={"pooling_type": "MEAN", "normalize": False},
-                **self._engine_kwargs,
-            )
-        return self._embed_llm
-
-    def embed_texts(self, texts: list, batch_size: int = 256) -> np.ndarray:
-        """Mean-pooled embedding per text via vLLM's embed-task engine -- ColdLLM's own
-        Filtering-stage representation (arXiv:2402.09176 Eq. 7: mean pooling over token
-        embeddings), computed directly by vLLM's pooling engine rather than by hand. Unlike the
-        paper, there's no learned MLP projection on top -- these raw mean-pooled vectors feed
-        straight into filter_candidates()'s inner product. `batch_size` bounds how many texts
-        are queued to the engine per call; vLLM schedules/batches internally either way, so
-        this is a memory safeguard, not a concurrency knob (unlike a per-request HTTP client,
-        there's no serial-request penalty here to work around)."""
-        embeddings = []
-        for start in range(0, len(texts), batch_size):
-            batch = texts[start:start + batch_size]
-            outputs = self.embed_llm.embed(batch)
-            embeddings.extend(o.outputs.embedding for o in outputs)
-        return np.asarray(embeddings, dtype=np.float32)
+        self.generate_llm = LLM(model=model, task="generate", **engine_kwargs)
 
     def yes_probability(self, prompts: list, batch_size: int = 256, reasoning: bool = False) -> np.ndarray:
         """Hard 0.0/1.0 per prompt -- the paper fine-tunes its Refining model via LoRA, so it gets
@@ -134,32 +81,37 @@ class VLLMColdLLMSimulator:
         return np.array([1.0 if a == "yes" else 0.0 for a in answers], dtype=np.float32)
 
 
-def user_preference_embeddings(train_matrix: sparse.csr_matrix, item_embeddings: np.ndarray) -> np.ndarray:
-    """Mean of a user's training-history items' embeddings -- the embedding-space analog of
-    cbhcf.CBHCFModel._content_score_matrix's train_matrix @ similarity, but producing one dense
-    per-user vector instead of a per-(user, item) score."""
-    history_counts = np.asarray(train_matrix.sum(axis=1)).ravel()
-    summed = train_matrix @ item_embeddings
-    safe_counts = np.where(history_counts > 0, history_counts, 1)
-    pooled = summed / safe_counts[:, None]
-    pooled[history_counts == 0] = 0.0
-    return pooled
+def _row_scaled(matrix) -> sparse.csr_matrix:
+    """Divide each row by its own sum, leaving all-zero rows at zero (a user with no training
+    history has no content profile and must score 0, not NaN)."""
+    m = sparse.csr_matrix(matrix)
+    counts = np.asarray(m.sum(axis=1)).ravel()
+    inv = np.divide(1.0, counts, out=np.zeros_like(counts, dtype=np.float64), where=counts > 0)
+    return (sparse.diags(inv) @ m).astype(np.float32)
+
+
+def user_content_profile(train_matrix: sparse.csr_matrix, item_content: sparse.csr_matrix) -> sparse.csr_matrix:
+    """A user's TF-IDF content profile for Filtering Simulation: the row-scaled average of the
+    content vectors of the items in their training history."""
+    return _row_scaled(train_matrix) @ sparse.csr_matrix(item_content)
 
 
 def filter_candidates(
-    item_embeddings: np.ndarray,
-    user_embeddings: np.ndarray,
+    item_content: sparse.csr_matrix,
+    user_profiles: sparse.csr_matrix,
     cold_item_ids: np.ndarray,
     top_k: int = 50,
 ) -> dict:
-    """Stage 1 -- Filtering Simulation. For each cold item, ranks every user by dot-product
-    similarity to that item's embedding and keeps the top_k. Returns {item_idx: user_idx array}.
-    Plain numpy argpartition over a brute-force inner product -- this is what the paper itself
-    does too (Eq. 17: an inner product against every user), not an approximation chosen for
-    lack of FAISS; revisit only if this becomes the bottleneck at real dataset size."""
+    """Stage 1 -- Filtering Simulation, via TF-IDF cosine similarity -- `item_content` is
+    the same (n_items x n_terms) row-L2-normalized matrix CBHCF scores with
+    (content.ContentSpace.transform), so an inner product against a cold item's row IS its
+    cosine similarity to every user's profile. For each cold item, ranks every user by that
+    similarity and keeps the top_k. Returns {item_idx: user_idx array}. Plain numpy
+    argpartition over a sparse-dense inner product."""
     candidates = {}
     for item_idx in cold_item_ids:
-        scores = user_embeddings @ item_embeddings[item_idx]
+        item_vec = item_content[int(item_idx)].T
+        scores = (user_profiles @ item_vec).toarray().ravel()
         k = min(top_k, len(scores))
         top = np.argpartition(-scores, k - 1)[:k]
         candidates[int(item_idx)] = top[np.argsort(-scores[top])]
