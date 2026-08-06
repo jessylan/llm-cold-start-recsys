@@ -1,6 +1,6 @@
 # `recsys/` documentation
 
-Seven diagrams, each named for the question it answers. Every node is a real symbol; every
+EIght diagrams, each named for the question it answers. Every node is a real symbol; every
 table row points at `file:line`. Read them in this order on your first afternoon.
 
 | Doc | Question it answers | Read it when |
@@ -11,13 +11,14 @@ table row points at `file:line`. Read them in this order on your first afternoon
 | [04-cbhcf-score-composition.md](04-cbhcf-score-composition.md) | How does CBHCF combine ALS and content? | You are touching the hybrid, the content space, or lambda. |
 | [05-what-metrics-mean.md](05-what-metrics-mean.md) | What does this accuracy number mean? | You have a number and need to know what it measured against. |
 | [06-provider-equity.md](06-provider-equity.md) | Who gets exposure, and how do we turn it on? | You are picking up the provider-equity work. Written as an integration spec — the module is not wired in yet. |
-| [07-intervention-b-coldllm.md](07-intervention-b-coldllm.md) | How does Intervention B generate synthetic interactions for cold items? | You are touching `recsys/coldllm.py` or the ColdLLM notebook, or comparing its two prompting strategies. |
+| [07-intervention-a-embeddings.md](07-intervention-a-embeddings.md) | How does Intervention A replace TF-IDF with sentence embeddings? | You are touching `recsys/intervention_a.py`, `recsys/item_space.py`, or any of the four `intervention_a_*` notebooks. |
+| [08-intervention-b-coldllm.md](08-intervention-b-coldllm.md) | How does Intervention B generate synthetic interactions for cold items? | You are touching `recsys/coldllm.py` or the ColdLLM notebook, or comparing its two prompting strategies. |
 
 Two cross-cutting sections live at the bottom of the docs that own them:
 
 - **Drift** — every place the README, a docstring, or notebook prose contradicts the code.
-  Reported, not fixed. See [05](05-what-metrics-mean.md#drift) and
-  [06](06-provider-equity.md#drift).
+  Reported, not fixed. See [05](05-what-metrics-mean.md#drift),
+  [06](06-provider-equity.md#drift) and [07](07-intervention-a-embeddings.md#drift).
 
 ## Orientation in one paragraph
 

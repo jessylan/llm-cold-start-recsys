@@ -25,7 +25,7 @@ It cleans and combines ratings, then creates standard and cold-start evaluation 
 5. Run `notebooks/steel_thread.ipynb` It reads `outputs/hyperparams.json`; if that file is missing it falls back to untuned `lambda=1`.
 6. **(Optional, GPU only)** Run `notebooks/intervention_b_coldllm.ipynb` — ColdLLM-style
    synthetic interactions for cold-start items; see
-   [design_documents/07-intervention-b-coldllm.md](design_documents/07-intervention-b-coldllm.md).
+   [design_documents/08-intervention-b-coldllm.md](design_documents/08-intervention-b-coldllm.md).
    Needs step 5 to have run at least once (it reuses `steel_thread.ipynb`'s cached CBHCF
    baseline and content cache) plus a CUDA GPU with `vllm` installed separately.
 
@@ -112,7 +112,7 @@ design record** from the project's first architecture.
 
 ### Component documentation (current)
 
-Seven Mermaid diagrams, each named for the question it answers rather than the component it
+Eight Mermaid diagrams, each named for the question it answers rather than the component it
 covers. Every node is a real symbol and every table row points at `file:line`, so a diagram
 can be checked against the code rather than trusted. Start at
 [`README.md`](design_documents/README.md), which indexes them.
@@ -125,7 +125,8 @@ can be checked against the code rather than trusted. Start at
 | [04-cbhcf-score-composition.md](design_documents/04-cbhcf-score-composition.md) | How does CBHCF combine ALS and content? |
 | [05-what-metrics-mean.md](design_documents/05-what-metrics-mean.md) | What does this accuracy number mean? |
 | [06-provider-equity.md](design_documents/06-provider-equity.md) | Who gets exposure, and how do we turn it on? |
-| [07-intervention-b-coldllm.md](design_documents/07-intervention-b-coldllm.md) | How does Intervention B generate synthetic interactions for cold items? |
+| [07-intervention-a-embeddings.md](design_documents/07-intervention-a-embeddings.md) | How does Intervention A replace TF-IDF with sentence embeddings? |
+| [08-intervention-b-coldllm.md](design_documents/08-intervention-b-coldllm.md) | How does Intervention B generate synthetic interactions for cold items? |
 
 Docs 05 and 06 each end with a **Drift** section (places where prose contradicts the code,
 reported but not fixed) and an **Open questions** section (things not determinable from
