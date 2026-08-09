@@ -28,14 +28,16 @@ base model and held fixed across reveal levels.
 Three things make this run at Amazon-Books scale, where the original prototype could not (it built
 a dense 487,790 x 487,790 item-item similarity, ~950 GB, and a dense n_users x n_items score matrix):
 
-**1. The similarity matrix never exists.** `content.py` guarantees its item x term matrix `T` has
-L2-normalized rows, so `cosine_similarity(T) == T @ T.T` and the content score factors as
+**1. The similarity matrix never exists.** Every item representation guarantees L2-normalized rows,
+so `cosine_similarity(T) == T @ T.T` and the content score factors as
 
     cb[users, items] = (history[users] @ T) @ T[items].T
 
 `(H @ T) @ T.T` instead of `H @ (T @ T.T)`. The per-user profile `H @ T` is never materialized for
 the whole population either -- at ~3,500 terms per user over 384,339 users that would be ~10 GB
-sparse -- it is projected one user chunk at a time.
+sparse -- it is projected one user chunk at a time. Which arithmetic that factorization becomes
+(SpMM for TF-IDF, a GEMM plus an SpMM for Intervention A's mixed dense+sparse space) is
+`item_space.py`'s business, not this module's; nothing below this line knows the difference.
 
 **2. The user profile is FROZEN on `ref_train`.** The notebook's controlling principle is that user
 preferences are fit once and reused identically, with only the *item's* representation allowed to
@@ -57,6 +59,7 @@ import time
 import numpy as np
 import scipy.sparse as sparse
 
+from recsys import item_space as _item_space
 from recsys import scores as _scores
 
 
@@ -90,7 +93,8 @@ class CBHCFModel:
         self.content_weight = content_weight
         self.scale_kind = scale_kind
         self.freeze_user_profile = freeze_user_profile
-        self._content = None          # item x term, L2-normalized rows (content.ContentSpace output)
+        self._content = None          # item_space.ItemSpace -- L2-normalized item vectors, sparse
+                                      # (TF-IDF) or mixed dense+sparse (Intervention A)
         self._history = None          # user x item, row-scaled ref_train -- FROZEN
         self._cf = None               # the wrapped collaborative model
         self._s_cf = self._s_cb = None
@@ -108,10 +112,13 @@ class CBHCFModel:
     # --- fitting ----------------------------------------------------------------------------------
 
     def fit(self, train_matrix, *, item_content, cf_model=None) -> "CBHCFModel":
-        """`item_content` is the (n_items x n_terms) row-L2-normalized matrix from
-        `content.ContentSpace.transform`. `cf_model` is an already-fit collaborative model; omit it
-        for a pure content-based model."""
-        self._content = sparse.csr_matrix(item_content).astype(np.float32)
+        """`item_content` is the item representation, row-L2-normalized: either the
+        (n_items x n_terms) sparse matrix from `content.ContentSpace.transform` (TF-IDF, the
+        baseline) or an `item_space.ItemSpace` (Intervention A's mixed dense+sparse space). A raw
+        matrix is wrapped in `item_space.SparseItemSpace`, whose arithmetic is exactly what this
+        method used to run inline -- so passing one is unchanged, numerically and otherwise.
+        `cf_model` is an already-fit collaborative model; omit it for a pure content-based model."""
+        self._content = _item_space.as_item_space(item_content)
         self._history = _row_scaled(train_matrix)
         self._cf = cf_model
         if cf_model is not None:
@@ -150,19 +157,17 @@ class CBHCFModel:
     def content_scores(self, user_ids, item_ids=None, _items_T=None) -> np.ndarray:
         """Exact content scores for `user_ids` x `item_ids`, dense float32.
 
-        `_items_T` lets a caller hoist `T[items].T` out of a chunk loop. That hoist is worth 12.6x:
-        re-slicing and transposing a 136M-nonzero matrix per chunk dominated everything else."""
-        items_T = _items_T if _items_T is not None else self._content[np.asarray(item_ids)].T.tocsr()
-        profile = self._history[np.asarray(user_ids)] @ self._content       # (b x n_terms) sparse
-        return np.asarray((profile @ items_T).todense(), dtype=np.float32)
-
-    def _profile_chunk(self, user_ids):
-        return (self._history[np.asarray(user_ids)] @ self._content).astype(np.float32)
+        `_items_T` lets a caller hoist the per-item-block setup out of a chunk loop. That hoist is
+        worth 12.6x: re-slicing and transposing a 136M-nonzero matrix per chunk dominated everything
+        else. What the hoisted object IS depends on the representation -- see `item_space` -- and is
+        opaque here."""
+        hoisted = _items_T if _items_T is not None else self._content.hoist(item_ids)
+        return self._content.scores(self._history[np.asarray(user_ids)], hoisted)
 
     # --- the content cache: computed once, cached to disk, replayed for every (seed, k, lambda) ----
 
     def build_content_cache(self, eval_users, *, dtype="float16", device=None, gpu_device=None,
-                            user_chunk=256, path=None, reuse_from=None,
+                            user_chunk=256, path=None, reuse_from=None, build_mode_b=True,
                             verbose=True) -> "CBHCFModel":
         """Precompute the content half of the score. Independent of the reveal level, the ALS seed
         and lambda, so this runs once per run -- and is reloaded from `path` on later runs.
@@ -185,6 +190,13 @@ class CBHCFModel:
         on the content space and the cold items -- NOT on `eval_users` -- so it is always reusable,
         and rebuilding it per model is pure waste (it is ~2 GB and several minutes). The Mode A
         block is borrowed too when the eval-user set matches.
+
+        `build_mode_b=False` skips the Mode B block entirely. A SELECTION run -- comparing content
+        representations or sweeping lambda on `cold_val` -- reads only `sweep_mode_a_cached` and
+        `ceiling_reference`, both Mode A, so building Mode B for it costs several minutes and ~2 GB
+        per candidate to produce a block nothing reads. `mode_b_source()` then raises rather than
+        returning silently wrong scores, which is the intended failure: a run that needs Mode B must
+        ask for it.
         """
         import torch
         if self._cold_ids is None:
@@ -209,7 +221,8 @@ class CBHCFModel:
                                  f"set ({len(blob['eval_users']):,} vs {len(eval_users):,}); delete it")
             self._cache = {"eval_users": eval_users, "row_of": blob["row_of"],
                            "mode_a": torch.as_tensor(blob["mode_a"]),
-                           "mode_b": torch.as_tensor(blob["mode_b"])}
+                           "mode_b": None if blob["mode_b"] is None
+                           else torch.as_tensor(blob["mode_b"])}
             if verbose:
                 print(f"[cbhcf] content cache loaded from {path}")
             return self._move_cache(device)
@@ -227,7 +240,11 @@ class CBHCFModel:
         # rows. Narrow output -> CPU sparse product, no profile densification. Independent of
         # eval_users, hence borrowable.
         t0 = time.perf_counter()
-        if borrowed_b is not None:
+        if not build_mode_b:
+            mode_b, t_b = None, 0.0
+            if verbose:
+                print("[cbhcf] mode B: skipped (build_mode_b=False)")
+        elif borrowed_b is not None:
             mode_b, t_b = borrowed_b, 0.0
             if verbose:
                 print("[cbhcf] mode B: reused (independent of the eval-user set)")
@@ -241,26 +258,30 @@ class CBHCFModel:
             os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
             with open(path, "wb") as f:
                 pickle.dump({"eval_users": eval_users, "row_of": row_of,
-                             "mode_a": mode_a.cpu().numpy(), "mode_b": mode_b.cpu().numpy()},
+                             "mode_a": mode_a.cpu().numpy(),
+                             "mode_b": None if mode_b is None else mode_b.cpu().numpy()},
                             f, protocol=pickle.HIGHEST_PROTOCOL)
             if verbose:
                 print(f"[cbhcf] content cache saved to {path}")
         if verbose:
-            gb = sum(v.element_size() * v.nelement() for v in (mode_a, mode_b)) / 1e9
+            gb = sum(v.element_size() * v.nelement()
+                     for v in (mode_a, mode_b) if v is not None) / 1e9
+            b_shape = "skipped" if mode_b is None else f"{tuple(mode_b.shape)} in {t_b:.0f}s (cpu)"
             print(f"[cbhcf] content cache: mode_a {tuple(mode_a.shape)} in {t_a:.0f}s "
-                  f"({'gpu' if gpu_device else 'cpu'})  mode_b {tuple(mode_b.shape)} in {t_b:.0f}s "
-                  f"(cpu)  [{dtype}, {gb:.2f} GB]")
+                  f"({'gpu' if gpu_device else 'cpu'})  mode_b {b_shape}  [{dtype}, {gb:.2f} GB]")
         return self._move_cache(device)
 
     def _move_cache(self, device):
         if device is not None:
-            self._cache["mode_a"] = self._cache["mode_a"].to(device)
-            self._cache["mode_b"] = self._cache["mode_b"].to(device)
+            for key in ("mode_a", "mode_b"):
+                block = self._cache.get(key)      # mode_b is None on a Mode-A-only selection run
+                if block is not None:
+                    self._cache[key] = block.to(device)
         return self
 
     def _block_cpu(self, users, items, td, chunk, verbose, label):
         import torch
-        items_T = self._content[np.asarray(items)].T.tocsr()      # hoisted -- worth 12.6x
+        items_T = self._content.hoist(items)                      # hoisted -- worth 12.6x
         out = torch.empty((len(users), len(items)), dtype=td)
         for s in range(0, len(users), chunk):
             part = self.content_scores(users[s:s + chunk], _items_T=items_T)
@@ -273,20 +294,21 @@ class CBHCFModel:
         return out
 
     def _block_gpu(self, users, items, td, gpu_device, chunk, verbose):
-        """Mode A via cuSPARSE SpMM: out.T = T[items] @ profile.T, with T[items] resident."""
+        """Mode A on the GPU, with the item block resident and the user profile streamed in chunks.
+
+        The per-representation arithmetic lives in `item_space` (cuSPARSE SpMM for a sparse space, a
+        GEMM plus an SpMM for Intervention A's mixed one); what stays here is the chunking, the
+        residency and the pool hygiene, which are the same either way."""
         import cupy as cp
-        import cupyx.scipy.sparse as cusp
         import torch
         dev = int(str(gpu_device).split(":")[-1]) if ":" in str(gpu_device) else 0
         with cp.cuda.Device(dev):
-            g_T = cusp.csr_matrix(self._content[np.asarray(items)].tocsr().astype(np.float32))
+            g_T = self._content.gpu_hoist(items)
             out = torch.empty((len(users), len(items)), dtype=td)
             for s in range(0, len(users), chunk):
-                prof = self._profile_chunk(users[s:s + chunk])
-                g_prof_T = cp.asarray(np.asfortranarray(prof.toarray().T))
-                block = (g_T @ g_prof_T).T                        # (b x n_items) dense on GPU
+                block = self._content.gpu_scores(g_T, self._history[users[s:s + chunk]])
                 out[s:s + chunk] = torch.as_tensor(cp.asnumpy(block)).to(dtype=td)
-                del g_prof_T, block
+                del block
                 cp.get_default_memory_pool().free_all_blocks()
                 if verbose:
                     print(f"\r[cbhcf] mode A (gpu): {min(s + chunk, len(users)):,}/{len(users):,}",
@@ -350,6 +372,10 @@ class CBHCFModel:
         return self._combined(self._auc_candidate_ids)
 
     def mode_b_source(self):
+        if self._cache is None or self._cache.get("mode_b") is None:
+            raise RuntimeError("no Mode B content block; this cache was built with "
+                               "build_mode_b=False (a Mode-A-only selection run). Rebuild with "
+                               "build_content_cache(..., build_mode_b=True) to rank users per item.")
         return _scores.AdditiveUserBlock(
             self._cf.mode_b_source(), _scores.DenseUserBlock(self._cache["mode_b"], self._device),
             1.0 / self._s_cf, self.content_weight / self._s_cb)
@@ -425,7 +451,8 @@ class CBHCFModel:
 
 def wrap_seeds(cf_models, train_matrix, item_content, eval_users, *, content_weight=1.0,
                scale_kind="std", freeze_user_profile=True, cache_dtype="float16",
-               cache_device=None, gpu_device=None, user_chunk=256, cache_path=None, verbose=True):
+               cache_device=None, gpu_device=None, user_chunk=256, cache_path=None,
+               build_mode_b=True, verbose=True):
     """One CBHCF per collaborative seed, all SHARING a single content cache.
 
     The ensemble exists to separate signal from ALS initialization noise, so CBHCF must wrap every
@@ -443,7 +470,7 @@ def wrap_seeds(cf_models, train_matrix, item_content, eval_users, *, content_wei
         if base is None:
             m.build_content_cache(eval_users, dtype=cache_dtype, device=cache_device,
                                   gpu_device=gpu_device, user_chunk=user_chunk, path=cache_path,
-                                  verbose=verbose)
+                                  build_mode_b=build_mode_b, verbose=verbose)
             m.calibrate(eval_users)
             base = m
         else:

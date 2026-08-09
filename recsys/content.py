@@ -186,10 +186,18 @@ class ContentSpace:
     slices: dict = field(default_factory=dict)
     n_features: int = 0
 
-    def transform(self, docs: dict[str, np.ndarray]) -> sparse.csr_matrix:
+    def transform(self, docs: dict[str, np.ndarray], normalize_rows: bool = True) -> sparse.csr_matrix:
         """Vectorize `docs` (role -> array of strings, item_index order) into the fitted space.
         Returns a row-L2-normalized CSR item x term matrix, so `X @ X.T` is exactly cosine
-        similarity. Terms unseen at fit time are dropped (see module docstring)."""
+        similarity. Terms unseen at fit time are dropped (see module docstring).
+
+        `normalize_rows=False` returns the weighted blocks WITHOUT the final row renormalization.
+        That is not useful on its own -- the cosine identity is exactly what the normalization buys --
+        but it is required when these blocks are only PART of a wider space, as in
+        `intervention_a.py`, where a dense sentence-embedding block sits alongside them. There the
+        renormalization has to span every block at once; doing it here first and again later would
+        give each half its own unit norm and silently destroy the per-field weighting between them.
+        """
         n_rows = len(next(iter(docs.values())))
         blocks = []
         for role in ROLES:
@@ -204,6 +212,8 @@ class ContentSpace:
         # concatenation's dot product is sum_f w_f^2 cos_f. Renormalizing rows turns that into the
         # weighted AVERAGE, and lets an item missing a field spend its full norm on the rest.
         stacked = sparse.hstack(blocks, format="csr", dtype=np.float32)
+        if not normalize_rows:
+            return stacked
         return normalize(stacked, norm="l2", axis=1, copy=False)
 
     def block_of(self, role: str) -> slice:
@@ -213,7 +223,7 @@ class ContentSpace:
 
 
 def fit_content_space(docs: dict[str, np.ndarray], fit_rows: np.ndarray, weights: dict = None,
-                      min_df: int = 2, verbose: bool = True) -> ContentSpace:
+                      min_df: int = 2, verbose: bool = True, roles=None) -> ContentSpace:
     """Fit one TF-IDF block per role on `fit_rows` ONLY.
 
     `fit_rows` must be the warm item ids -- vocabulary and IDF are chosen without ever seeing a cold
@@ -221,13 +231,17 @@ def fit_content_space(docs: dict[str, np.ndarray], fit_rows: np.ndarray, weights
     not just for the collaborative one. Roles whose fit population yields no usable vocabulary
     (every term a singleton, or the field absent for this dataset) are dropped from the space
     rather than contributing an all-zero block.
+
+    `roles` restricts which roles are fitted, defaulting to all of `ROLES`. `intervention_a.py`
+    passes the three roles it does NOT hand to a sentence encoder, because a role must be
+    represented once or the field would be double-counted in the item's norm.
     """
     weights = {**DEFAULT_WEIGHTS, **(weights or {})}
     space = ContentSpace(weights={})
     offset = 0
     if verbose:
         print(f"{'role':<10}{'kind':>8}{'vocab':>10}{'fit nnz':>12}{'nonempty(fit)':>15}{'weight':>8}")
-    for role in ROLES:
+    for role in (ROLES if roles is None else tuple(roles)):
         column = docs.get(role)
         if column is None:
             continue

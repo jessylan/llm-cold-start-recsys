@@ -9,6 +9,7 @@ __pycache__/
 outputs/*
 !outputs/.gitkeep
 !outputs/hyperparams.json
+!outputs/intervention_a_*.json
 
 # Raw data (large files, keep the folders)
 data/raw/movies/*
@@ -16,11 +17,12 @@ data/raw/books/*
 data/raw/5-core/*
 data/filtered/*
 data/cache/*
+data/embeddings/*
 !data/raw/movies/.gitkeep
 !data/raw/books/.gitkeep
 !data/filtered/.gitkeep
 !data/cache/.gitkeep
-
+!data/embeddings/.gitkeep
 
 # OS and editor temporary files
 Thumbs.db
