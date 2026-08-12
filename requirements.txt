@@ -1,63 +1,104 @@
 # =============================================================================
-# 699 Capstone — Baseline "Steel Thread": Collaborative Filtering (ALS, fold-in)
+# 699 Capstone — LLM Cold-Start Recommender
 # -----------------------------------------------------------------------------
-# Environment:  Python 3.12 venv  ->  ~/venvs/699-baseline-steel-thread
-# Platform:     Apple Silicon (arm64), macOS.  All pins below ship prebuilt
-#               arm64 wheels, so `uv pip install` needs no compiler / source build.
+# Environment:  Python 3.12, Linux x86_64 with a CUDA GPU.  Reference environment
+#               is a conda env `699-gpu` under WSL2 (Ubuntu 24.04) on 2x RTX 4090.
 #
 # Recreate from scratch:
-#   uv venv ~/venvs/699-baseline-steel-thread --python 3.12
-#   uv pip install --python ~/venvs/699-baseline-steel-thread/bin/python -r requirements.txt
-#   ~/venvs/699-baseline-steel-thread/bin/python -m ipykernel install --user \
-#       --name 699-baseline-steel-thread \
-#       --display-name "Python (699-baseline-steel-thread)"
+#   conda create -n 699-gpu python=3.12 -y
+#   conda activate 699-gpu
+#   pip install -r requirements.txt
+#   pip uninstall -y torchcodec          # REQUIRED -- see Intervention B below
+#   python -m ipykernel install --user --name 699-gpu --display-name "Python (699-gpu)"
 #
-# Versions are pinned (==) to what was resolved on 2026-07-06 for reproducibility;
-# reconfirmed unchanged on 2026-07-12 after the BPR -> ALS rebuild (no new
-# dependencies were introduced, only how the existing ones are used).
-# 2026-07-16: pyarrow added for notebooks/data_filtering.ipynb (streaming
-# Parquet writes/reads for the Amazon Books/Movies review + metadata dumps).
+# This file previously described an Apple-Silicon venv and listed the GPU
+# dependencies as prose rather than as requirements, so `pip install -r` produced
+# an environment that could not run Intervention A or B. It now describes the one
+# environment the project actually runs in, and the pins below are the versions
+# resolved there (verified 2026-08-09), not the older macOS resolution.
+#
+# The baseline steel thread itself is still CPU-friendly -- `implicit` fits on CPU
+# and the GPU is used only for retrieval -- but the interventions are not optional
+# extras with a CPU fallback: encoding a 487,790-item catalogue and running vLLM
+# are GPU jobs. One file, one environment.
 # =============================================================================
 
 # --- Core recommender stack --------------------------------------------------
-implicit==0.7.3        # ALS (fold-in via recalculate_item) + ranking metrics (NDCG). CPU-only on Mac.
-numpy==2.5.1           # Array backbone. Pinned: implicit/scipy/pandas ABI must agree.
-scipy==1.18.0          # Sparse matrices (csr_matrix) for the user x item interactions.
-pandas==3.0.3          # Load MovieLens u.data; map raw IDs -> contiguous integer indices.
+# numpy/scipy are pinned BELOW what a standalone resolve would pick, because vllm
+# 0.26 constrains them. Raising these to 2.5.1 / 1.18.0 (the old macOS pins) makes
+# pip backtrack and either downgrade them again or fail.
+implicit==0.7.3        # ALS (fold-in via recalculate_item) + ranking metrics (NDCG).
+                       # CPU-only here: implicit's GPU extension fails to load with an RMM
+                       # symbol error on this box, which is why GPU ALS fit was dropped.
+numpy==2.3.5           # Array backbone. Pinned: implicit/scipy/pandas/vllm ABI must agree.
+scipy==1.17.1          # Sparse matrices (csr_matrix) for the user x item interactions.
+pandas==3.0.3          # Parquet -> DataFrame; maps raw IDs -> contiguous integer indices.
 pyarrow==25.0.0        # Streaming Parquet writes/reads (notebooks/data_filtering.ipynb).
 scikit-learn==1.8.0    # TF-IDF + cosine similarity for the content-based hybrid CF (recsys/cbhcf.py).
-tqdm==4.68.3           # Progress bars used internally by implicit's fit / evaluation.
+tqdm==4.69.0           # Progress bars used internally by implicit's fit / evaluation.
 threadpoolctl==3.6.0   # Controls BLAS thread count; keeps implicit's OpenBLAS well-behaved.
-matplotlib==3.11.0     # Warm-up curve plot (Section 9).
-wandb==0.26.1          # Experiment tracking for the warm-up sweeps (Sections 9-10).
+matplotlib==3.11.1     # Warm-up curve plots.
+wandb==0.26.1          # Experiment tracking for the warm-up sweeps.
+
+
+# --- GPU acceleration --------------------------------------------------------
+# `torch` is deliberately NOT pinned here: vllm dictates it (see below), and pinning
+# it independently is how you get an unsatisfiable resolve. It arrives as a vllm
+# dependency at 2.11.0+cu130.
+#
+# recsys/gpu_retrieval.py, recsys/cf.py, recsys/cbhcf.py and recsys/eval.py all import
+# torch through FUNCTION-LOCAL imports, so the package still imports on a machine
+# without it -- only the retrieval paths need it.
+cupy==13.4.1           # cuSPARSE SpMM for recsys/item_space.py's blocked sparse products
+                       # (function-local import; falls back to scipy on CPU if absent).
 
 
 # --- Intervention A: sentence-embedding content space ------------------------
-# NOT needed to run the baseline steel thread, and NOT installable to any useful effect on the Mac
-# venv -- encoding the 487,790-item catalogue is a GPU job and happens only in the CUDA environment
-# (~/699-gpu-bench, conda env 699-gpu). Listed here so the dependency is declared rather than
-# discovered. Deliberately unpinned: this is the one place where the resolved versions differ by
-# machine, and the CUDA box was on sentence-transformers 5.6.1 / transformers 5.14.1 as of
-# 2026-08-01.
+# Encodes the item catalogue once into data/embeddings/ (~12 GB), keyed by parent_asin.
 #
 # Version warning: transformers 5.x BREAKS several trust_remote_code embedding models --
 # Alibaba-NLP/gte-*-en-v1.5 (RoPE index out of bounds) and jinaai/jina-embeddings-v3
-# (XLMRobertaLoRA missing all_tied_weights_keys). Both were dropped from the slate for this reason,
-# not on merit. See recsys/intervention_a.py.
-sentence-transformers  # SentenceTransformer.encode for the six-encoder slate
-einops                 # required by several of the custom-architecture encoders
+# (XLMRobertaLoRA missing all_tied_weights_keys). Both were dropped from the slate for this
+# reason, not on merit. See recsys/intervention_a.py.
+sentence-transformers==5.6.1
+transformers==5.14.1   # Pinned explicitly: vllm and sentence-transformers both depend on it,
+                       # and this is the version both were verified against.
+einops==0.8.2          # required by several of the custom-architecture encoders
 
 
-# --- Intervention B: LLM-hallucinated interactoins ---------------------------
-# NOTE: recsys/coldllm.py (Intervention B) imports `vllm` directly (`from vllm import LLM`) to
-# run Refining Simulation's yes/no judgment as an in-process `task="generate"` engine. Like
-# `torch` (needed by recsys/gpu_retrieval.py), `vllm` is CUDA-only and not installed via the
-# Mac/arm64 requirements file -- install it separately in whatever GPU environment actually
-# runs notebooks/intervention_b_coldllm.ipynb (`pip install vllm`, version pinned to that
-# machine's CUDA toolkit).
+# --- Intervention B: LLM-simulated interactions ------------------------------
+# recsys/coldllm.py imports `vllm` LAZILY, inside VLLMColdLLMSimulator.__init__, so Filtering
+# Simulation, the work queue, assembly and SyntheticAugmentedDataset all import and run without
+# an engine. Only Refining Simulation needs one.
+#
+# TWO WARNINGS, both learned the hard way:
+#
+# 1. `pip install vllm` DICTATES the torch version -- 0.26.0 pins torch 2.11.0, which upgraded
+#    this box from 2.6.0+cu124 and pulled the whole CUDA 13 stack with it. Check what a vllm
+#    version pins before installing it into an environment that already works.
+# 2. That upgrade also installs `torchcodec`, which BREAKS sentence-transformers (and so all of
+#    Intervention A's encoding): its loader raises RuntimeError, and sentence_transformers guards
+#    the import with `except (ImportError, OSError)`, which does not catch it. Nothing in this
+#    project uses torchcodec, and it cannot be excluded from a requirements file -- it must be
+#    removed AFTER install:
+#        pip uninstall -y torchcodec
+#
+# recsys/coldllm.py absorbs three API/platform differences so a newer or older vllm still works;
+# the pin below is for reproducibility, not because the code needs exactly this release:
+#   _structured_outputs()   GuidedDecodingParams (<= ~0.9) vs StructuredOutputsParams (0.26)
+#   _engine_role()          LLM(task="generate") (<= ~0.10) vs LLM(runner="generate") (0.26)
+#   _enable_wsl_pin_memory()  vLLM disables pinned memory whenever it detects WSL. In 0.26 that is
+#                             fatal, not slow: is_uva_available() IS is_pin_memory_available(), so
+#                             engine init dies with "RuntimeError: UVA is not available". vLLM's
+#                             own escape hatch is VLLM_WSL2_ENABLE_PIN_MEMORY=1, which coldllm.py
+#                             sets when the WSL2 kernel clears vLLM's >= 4.19.121 floor (this box
+#                             runs 6.18.33) and only when the variable is not already set.
+vllm==0.26.0           # pulls torch 2.11.0+cu130 and triton 3.6.0
 
 
 # --- Notebook runtime --------------------------------------------------------
-ipykernel==7.3.0       # Registers this venv as a selectable Jupyter kernel.
-jupyterlab==4.6.1      # Local notebook UI. Drop this line if you launch from VS Code/another host.
-ipywidgets==8.1.8      # Live tqdm progress bars in the notebook (silences the IProgress warning).
+ipykernel==7.3.0       # Registers this env as a selectable Jupyter kernel.
+# The two below are NOT installed in the reference environment -- the notebooks are run from
+# VS Code, which supplies its own frontend. Uncomment if you launch JupyterLab directly.
+# jupyterlab==4.6.1    # Local notebook UI.
+# ipywidgets==8.1.8    # Live tqdm progress bars (silences the IProgress warning).

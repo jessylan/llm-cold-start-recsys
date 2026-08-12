@@ -9,11 +9,13 @@ It cleans and combines ratings, then creates standard and cold-start evaluation 
 
 ## Quick start
 
-1. Use Python 3 and install the core dependencies:
-
+1. Use Python 3.12 and install the dependencies then remove one package vLLM pulls in that breaks Intervention A:
    ```bash
-   pip install -r requirements.txt
+   pip install -r requirements.txt && pip uninstall -y torchcodec
    ```
+   `requirements.txt` describes a Linux + CUDA environment: the interventions are GPU jobs
+   with no CPU fallback. The baseline steel thread will still run without a GPU (`implicit`
+   fits on CPU); only retrieval and the interventions need one.
 2. Get the data. Either:
    - **Fast path (recommended):** download the four `data/filtered/*.parquet` files
      from the links under **Data and outputs** into `data/filtered/`, then skip to
@@ -22,14 +24,30 @@ It cleans and combines ratings, then creates standard and cold-start evaluation 
      **Data and outputs**, then run step 3.
 3. Run `notebooks/data_filtering.ipynb`.  
 4. Run `notebooks/hyperparameter_tuning.ipynb`. Skippable — `outputs/hyperparams.json` is committed.
-5. Run `notebooks/steel_thread.ipynb` It reads `outputs/hyperparams.json`; if that file is missing it falls back to untuned `lambda=1`.
-6. **(Optional, GPU only)** Run `notebooks/intervention_b_coldllm.ipynb` — ColdLLM-style
-   synthetic interactions for cold-start items; see
+5. **(Optional, GPU only)** Intervention A — sentence embeddings in place of TF-IDF for the
+   item's own prose. Run `notebooks/intervention_a_encoding.ipynb` **once** to build
+   `data/embeddings/*.npz` (~12 GB, keyed by `parent_asin`, so it is split-independent);
+   everything downstream reads those files and never touches a GPU encoder again. The three
+   selection notebooks — `intervention_a_model_selection`, `..._description_variants`,
+   `..._weight_sweep` — choose the encoder and field weights on the cold-item **validation**
+   set, and write their results to `outputs/intervention_a_*.json`, which is committed. Skip
+   them and `steel_thread.ipynb` uses the committed configuration.
+   See [design_documents/07-intervention-a-embeddings.md](design_documents/07-intervention-a-embeddings.md).
+6. **(Optional, GPU only)** Intervention B — ColdLLM-style synthetic interactions for
+   cold-start items. Run `notebooks/intervention_b_coldllm.ipynb`. It is self-contained: it
+   computes its own CBHCF baseline and does not need step 7 to have run. Needs a CUDA GPU
+   with `vllm` installed separately, and generation is a multi-hour job the first time
+   (scores are cached afterwards). See
    [design_documents/08-intervention-b-coldllm.md](design_documents/08-intervention-b-coldllm.md).
-   Needs step 5 to have run at least once (it reuses `steel_thread.ipynb`'s cached CBHCF
-   baseline and content cache) plus a CUDA GPU with `vllm` installed separately.
+7. Run `notebooks/steel_thread.ipynb`. It reads `outputs/hyperparams.json`; if that file is
+   missing it falls back to untuned `lambda=1`. It reports whichever arms have artifacts
+   available and **skips the rest with a printed reason**, so it runs on its own if you
+   skipped steps 5 and 6, and adds the Intervention A and B curves if you did not.
 
-The notebooks use project-relative paths and can be run from VS Code or Jupyter.
+The notebooks use project-relative paths and can be run from VS Code or Jupyter. 
+Run only one GPU notebook at a time. `steel_thread.ipynb` and `intervention_b_coldllm.ipynb`
+are pinned to the same card, and under WSL an over-subscribed GPU pages into host RAM instead
+of failing, which takes down the whole VM rather than one kernel.
 
 ## Pipeline
 
@@ -48,6 +66,7 @@ Dataset  (interaction matrix + warm / cold-val / cold-test splits, built in memo
 |-- data/raw/                           # local raw data (not committed)
 |-- data/filtered/                      # local filtered data (not committed)
 |-- data/cache/                         # local cache data (not committed)
+|-- data/embeddings/                    # Intervention A sentence embeddings (not committed)
 |-- design_documents/
 |   |-- README.md                       # index: which doc answers which question
 |   |-- 01-getting-started.md           # zero -> running evaluation; what each notebook writes
@@ -56,14 +75,20 @@ Dataset  (interaction matrix + warm / cold-val / cold-test splits, built in memo
 |   |-- 04-cbhcf-score-composition.md   # ALS + content -> AdditiveItemBlock; where lambda comes from
 |   |-- 05-what-metrics-mean.md         # Mode A/B control flow, ceilings, floors, pools
 |   |-- 06-provider-equity.md           # equity_metrics.py as an integration spec (not yet wired in)
+|   |-- 07-intervention-a-embeddings.md # sentence embeddings in place of TF-IDF prose
+|   |-- 08-intervention-b-coldllm.md    # LLM-simulated interactions for cold items
 |   `-- initial_pipeline_design/        # RETIRED MovieLens steel thread; design record only
 |-- notebooks/
-|   |-- data_filtering.ipynb            # filtering reviews datasets and metadata as well
-|   |-- hyperparameter_tuning.ipynb     # selects CBHCF's lambda on the cold-item VALIDATION set
-|   |-- steel_thread.ipynb              # how-to for recsys modules
-|   `-- intervention_b_coldllm.ipynb    # Intervention B: ColdLLM-style synthetic interactions (needs vLLM + GPU)
+|   |-- data_filtering.ipynb                        # filtering reviews datasets and metadata as well
+|   |-- hyperparameter_tuning.ipynb                 # selects CBHCF's lambda on the cold-item VALIDATION set
+|   |-- steel_thread.ipynb                          # how-to for recsys modules; the reported baseline and both interventions
+|   |-- intervention_a_encoding.ipynb               # encodes the catalogue ONCE -> data/embeddings/*.npz (GPU)
+|   |-- intervention_a_model_selection.ipynb        # picks the sentence encoder on the cold-item VALIDATION set
+|   |-- intervention_a_description_variants.ipynb   # should `description` be embedded, and does its structure matter?
+|   |-- intervention_a_weight_sweep.ipynb           # field weights, same search budget for both arms
+|   `-- intervention_b_coldllm.ipynb                # Intervention B: ColdLLM-style synthetic interactions (needs vLLM + GPU)
 |-- outputs/
-|   `-- hyperparams.json                # Tuned lambda for CBHCF model - output of `hyperparameter_tuning.ipynb`
+|   `-- hyperparams.json                # tuned CBHCF lambda and the Intervention A configuration
 |-- recsys/
 |   |-- __init__.py                     # pins the BLAS thread pool to 1 (implicit does its own parallelism)
 |   |-- load.py                         # Amazon Books loader; the 80/10/10 warm / cold-val / cold-test split (of items with ≥ min_interactions=25)
@@ -71,7 +96,9 @@ Dataset  (interaction matrix + warm / cold-val / cold-test splits, built in memo
 |   |-- pop.py                          # popularity and activity baseline models (the floors)
 |   |-- cf.py                           # ALS collaborative filtering baseline
 |   |-- content.py                      # item content vectors: role-based fields, BM25F weighted blocks
+|   |-- item_space.py                   # ItemSpace: the dense+sparse item representation CBHCF wraps, TF-IDF or embeddings
 |   |-- cbhcf.py                        # content-based hybrid CF -- ALS score + weighted content score
+|   |-- intervention_a.py               # Intervention A: sentence-embedding item space (needs sentence-transformers + GPU)
 |   |-- scores.py                       # score sources: the interface `gpu_retrieval` consumes instead of factors
 |   |-- gpu_retrieval.py                # exact GPU top-K, candidate-pool AUC, and the Mode B duals
 |   |-- eval.py                         # evaluation harness: metrics, within-item ceiling, both warm-up sweeps
@@ -97,11 +124,15 @@ Dataset  (interaction matrix + warm / cold-val / cold-test splits, built in memo
 | `data/filtered/movies_meta_5core_common.parquet` | Movies metadata for filtered subset | https://drive.google.com/file/d/1iDKH3So891ohCIk977BrUOW_hpSbktQA/view?usp=sharing |
 | `data/filtered/movies_5core_common.parquet` | Movies reviews & ratings for filtered subset | https://drive.google.com/file/d/1kvN5UuoBenbZFNuUq387WZSOgDfXpLQv/view?usp=sharing |
 | `data/cache/common_user_ids.pkl` | Intersection of `user_id`s from Books & Movies datasets - output of `data_filtering.ipynb` shared to save recompute | https://drive.google.com/file/d/1K-emjnRk_G3AjZ9RhB17ksI4EKZ5XMxr/view?usp=sharing | 
-| `outputs/hyperparams.json` | Tuned lambda for CBHCF model | Generated by step 4 |
+| `outputs/hyperparams.json` | Tuned CBHCF lambda and the Intervention A configuration | Generated by steps 4 and 5 |
 
 Raw and filtered data are excluded from Git because they are large. The fast path in
 **Quick start**  downloads the filtered parquet files directly; the raw files are only 
 needed to re-run `data_filtering.ipynb` yourself.
+
+The Intervention A embeddings (`data/embeddings/`, ~12 GB) and every ColdLLM score cache are
+also excluded: they are regenerable from committed code and configuration, and syncing them
+costs more than rebuilding them.
 
 No sample data is currently committed. A fresh sample derived from
 `data/filtered/*.parquet` is planned.
