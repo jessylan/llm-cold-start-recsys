@@ -56,51 +56,94 @@ class Dataset:
     # instance (no further recursion) and when cold_val_fraction=0.
     cold_val: "Dataset" = None
 
+    # --- pool -> matrix builders -------------------------------------------------------------
+    # All four of these used to walk `reveal_pool` / `ceiling_pool` with a nested Python loop,
+    # appending one (row, col) pair at a time. `revealed_*_at_k` is called once per reveal level
+    # per seed per sweep, so at Books scale (2,727 cold items x up to 20 revealed) that was ~1.1M
+    # list appends per 21-level sweep, repeated for every arm.
+    #
+    # The pools are FIXED for the life of a Dataset, so the loop only has to happen once. The flat
+    # form below records, for every (cold item, user) pair, its local item index, its global item
+    # index, the user, and its position within that item's chronological pool -- after which
+    # "the first k of each item" is the vectorized mask `pos < k` and every builder is one
+    # `csr_matrix` construction with no Python-level iteration.
+    #
+    # Exactly equivalent, not approximately: COO construction sums duplicates and sorts indices, so
+    # the emission ORDER never mattered, only the multiset of pairs -- and the mask reproduces that
+    # multiset entry for entry. bench_30 asserts identity against the original loops across every
+    # k, including k=0, k beyond the pool length, duplicate pairs and empty pools.
+
+    def _flat_pool(self, which: str):
+        """(local_idx, item_idx, user_idx, position_within_item) for `reveal_pool` or
+        `ceiling_pool`, built once per Dataset and memoized.
+
+        Deliberately NOT a dataclass field: adding one would change the constructor signature, and
+        an unpickled Dataset built before this existed must still work (it rebuilds on first use).
+        `cache_pickle` writes the Dataset straight out of `load_dataset()`, before any of these are
+        called, so this never bloats the cache file either.
+        """
+        cache = getattr(self, "_flat_cache", None)
+        if cache is None:
+            cache = self._flat_cache = {}
+        if which in cache:
+            return cache[which]
+
+        pool = self.reveal_pool if which == "reveal" else self.ceiling_pool
+        ids = np.asarray(self.cold_item_ids, dtype=np.int64)
+        # `cold_item_ids` is `sorted(reveal_pool.keys())` by construction and `ceiling_pool` is
+        # built over the same items. Assert it rather than assume it: if the pools ever diverge,
+        # iterating `ids` would silently drop entries the old `pool.items()` loop included.
+        if set(pool.keys()) != set(ids.tolist()):
+            raise RuntimeError(
+                f"{which}_pool keys do not match cold_item_ids "
+                f"({len(pool)} vs {len(ids)}); the flat builders assume they are the same items.")
+
+        if len(ids) == 0:
+            empty = np.zeros(0, dtype=np.int64)
+            cache[which] = (empty, empty, empty, empty)
+            return cache[which]
+
+        lengths = np.fromiter((len(pool[i]) for i in ids), dtype=np.int64, count=len(ids))
+        users = (np.concatenate([np.asarray(pool[i], dtype=np.int64) for i in ids])
+                 if lengths.sum() else np.zeros(0, dtype=np.int64))
+        local = np.repeat(np.arange(len(ids), dtype=np.int64), lengths)
+        items = np.repeat(ids, lengths)
+        starts = np.cumsum(lengths) - lengths                  # first flat index of each item
+        pos = np.arange(len(users), dtype=np.int64) - np.repeat(starts, lengths)
+        cache[which] = (local, items, users, pos)
+        return cache[which]
+
     def revealed_matrix_at_k(self, k: int) -> sparse.csr_matrix:
         """User x item sparse matrix of cold items' revealed interactions at reveal level k."""
-        rows, cols = [], []
-        for item_idx, users in self.reveal_pool.items():
-            for u in users[:k]:
-                rows.append(u)
-                cols.append(item_idx)
-        data = np.ones(len(rows))
-        return sparse.csr_matrix((data, (rows, cols)), shape=(self.n_users, self.n_items))
+        _, items, users, pos = self._flat_pool("reveal")
+        m = pos < k
+        return sparse.csr_matrix((np.ones(int(m.sum())), (users[m], items[m])),
+                                 shape=(self.n_users, self.n_items))
 
     def revealed_item_users_at_k(self, k: int) -> tuple[np.ndarray, sparse.csr_matrix]:
         """Item x user sparse matrix (batch-ready for implicit's `recalculate_item`) of cold
         items' revealed interactions at reveal level k. Returns (item_ids, item_users_matrix)."""
-        rows, cols = [], []
-        for local_idx, item_idx in enumerate(self.cold_item_ids):
-            for u in self.reveal_pool[item_idx][:k]:
-                rows.append(local_idx)
-                cols.append(u)
-        data = np.ones(len(rows))
-        item_users = sparse.csr_matrix((data, (rows, cols)), shape=(len(self.cold_item_ids), self.n_users))
+        local, _, users, pos = self._flat_pool("reveal")
+        m = pos < k
+        item_users = sparse.csr_matrix((np.ones(int(m.sum())), (local[m], users[m])),
+                                       shape=(len(self.cold_item_ids), self.n_users))
         return self.cold_item_ids, item_users
 
     def ceiling_matrix(self) -> sparse.csr_matrix:
         """User x item sparse matrix of every cold item's FULL pre-test (ceiling) interactions -- the
         within-item warm reference. Folding a cold item in with all of this is the item's own
         fully-warm state (degree-matched by construction: same item, same last-5 test as the curve)."""
-        rows, cols = [], []
-        for item_idx, users in self.ceiling_pool.items():
-            for u in users:
-                rows.append(u)
-                cols.append(item_idx)
-        data = np.ones(len(rows))
-        return sparse.csr_matrix((data, (rows, cols)), shape=(self.n_users, self.n_items))
+        _, items, users, _ = self._flat_pool("ceiling")
+        return sparse.csr_matrix((np.ones(len(users)), (users, items)),
+                                 shape=(self.n_users, self.n_items))
 
     def ceiling_item_users(self) -> tuple[np.ndarray, sparse.csr_matrix]:
         """Item x user sparse matrix (batch-ready for implicit's `recalculate_item`) of every cold
         item's FULL pre-test interactions. Returns (item_ids, item_users_matrix) -- the ceiling
         analog of revealed_item_users_at_k, used for the within-item warm-reference fold-in."""
-        rows, cols = [], []
-        for local_idx, item_idx in enumerate(self.cold_item_ids):
-            for u in self.ceiling_pool[item_idx]:
-                rows.append(local_idx)
-                cols.append(u)
-        data = np.ones(len(rows))
-        item_users = sparse.csr_matrix((data, (rows, cols)), shape=(len(self.cold_item_ids), self.n_users))
+        local, _, users, _ = self._flat_pool("ceiling")
+        item_users = sparse.csr_matrix((np.ones(len(users)), (local, users)),
+                                       shape=(len(self.cold_item_ids), self.n_users))
         return self.cold_item_ids, item_users
 
 
@@ -118,7 +161,7 @@ def dataset_fingerprint(dataset: "Dataset") -> tuple:
     INPUTS instead -- see `load_params_fingerprint`.
     """
     cold_val_ids = None if dataset.cold_val is None else dataset.cold_val.cold_item_ids
-    return (
+    base = (
         int(dataset.n_users), int(dataset.n_items),
         int(dataset.ref_train.nnz), int(dataset.ref_test.nnz),
         int(0 if dataset.ref_val is None else dataset.ref_val.nnz),
@@ -127,6 +170,18 @@ def dataset_fingerprint(dataset: "Dataset") -> tuple:
         int(0 if cold_val_ids is None else len(cold_val_ids)),
         int(0 if cold_val_ids is None else np.asarray(cold_val_ids, dtype=np.int64).sum()),
     )
+    # A WRAPPER may declare extra identity. Every field above reads an attribute that a decorator
+    # like `coldllm.SyntheticAugmentedDataset` delegates straight through, so without this an
+    # augmented dataset fingerprints IDENTICALLY to the plain one -- and `cf.ALSModel.fold_in` keys
+    # its cold-factor memo on this fingerprint, so one model folded against both would silently
+    # reuse the wrong factors.
+    #
+    # APPENDED ONLY WHEN PRESENT, never as a fixed extra slot: a plain Dataset must keep returning
+    # the exact 10-tuple it always has. Every `data/cache/*` key, and the `dataset_fingerprint`
+    # stamped into all four sections of `outputs/hyperparams.json`, is that tuple -- widening it
+    # unconditionally would invalidate the lot and make the steel thread refuse its own artifacts.
+    salt = getattr(dataset, "_fingerprint_salt", None)
+    return base if salt is None else base + (salt,)
 
 
 def load_params_fingerprint(data_path: str, **load_kwargs) -> tuple:

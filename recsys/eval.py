@@ -258,7 +258,8 @@ def sweep(models, dataset, k_levels, K=100):
     return curve, n_eval_per_k
 
 
-def sweep_mode_a_cached(models, dataset, k_levels, K=100, verbose=True, with_auc=True):
+def sweep_mode_a_cached(models, dataset, k_levels, K=100, verbose=True, with_auc=True,
+                        on_recs=None):
     """Cached Mode-A warm-up sweep for GPU warm_cold ALS models (report S8(b)). Builds each seed's
     warm top-N once (warm factors are frozen across the reveal sweep) and reuses it for every k,
     scoring only the cold items (len(dataset.cold_item_ids)) per level. Produces the identical NDCG/Precision/Recall/HitRate
@@ -273,9 +274,18 @@ def sweep_mode_a_cached(models, dataset, k_levels, K=100, verbose=True, with_auc
     >= auc_min_degree -- plus cold), no dense matrix, no sampling (so the Krichene-Rendle
     sampled-metric critique doesn't apply). Degree-matching is reserved for AUC; the top-K path above
     still uses the full warm_cold pool. Verified exact vs scipy.rankdata in bench_14 (pre-degree-match).
-    Costs ~2.5x the top-K sweep; pass with_auc=False to skip it. Same (curve, n_eval_per_k) shape as sweep()."""
+    Costs ~2.5x the top-K sweep; pass with_auc=False to skip it. Same (curve, n_eval_per_k) shape as sweep().
+
+    `on_recs(ki, si, rec)` -- optional callback, handed the top-K ids this sweep already computed
+    for k_levels[ki] and models[si], before they are reduced to metrics. It exists so a second
+    measurement over the SAME recommendation lists costs no extra retrieval: `equity_metrics`
+    passes `ExposureAccumulator.add` here, and its provider-exposure curve is then guaranteed to
+    describe exactly the lists this NDCG curve describes. Deliberately generic -- eval.py must not
+    learn what a provider is. Its cost shows up as its own `on_recs` timing bucket rather than
+    hiding inside `recommend`."""
     from recsys import gpu_retrieval
-    t = {"setup": 0.0, "warm": 0.0, "foldin": 0.0, "recommend": 0.0, "metric": 0.0, "auc": 0.0}
+    t = {"setup": 0.0, "warm": 0.0, "foldin": 0.0, "recommend": 0.0, "metric": 0.0, "auc": 0.0,
+         "on_recs": 0.0}
     _t = time.perf_counter()
     test_csr = dataset.test_matrix.tocsr()
     eval_users = np.flatnonzero(np.diff(test_csr.indptr))
@@ -307,6 +317,8 @@ def sweep_mode_a_cached(models, dataset, k_levels, K=100, verbose=True, with_auc
             if with_auc:
                 cold_by_k.append(folded.cold_block_source())
             _t = time.perf_counter(); rec = folded.recommend_cached(eval_users, train_k_eval[ki], K); t["recommend"] += time.perf_counter() - _t
+            if on_recs is not None:
+                _t = time.perf_counter(); on_recs(ki, si, rec); t["on_recs"] += time.perf_counter() - _t
             _t = time.perf_counter(); results[ki][si] = _mode_a_metrics_core(rec, m_rows, m_items, m_rel, K); t["metric"] += time.perf_counter() - _t
         if with_auc:
             _t = time.perf_counter()
@@ -335,7 +347,10 @@ def sweep_mode_a_cached(models, dataset, k_levels, K=100, verbose=True, with_auc
         curve["AUC"]["std"].append(float(np.std(avals)) if with_auc else float("nan"))
         n_eval_per_k.append(results[ki][0]["n_eval"])
     if verbose:
-        print("[sweep_mode_a_cached] " + "  ".join(f"{k}={v:.1f}s" for k, v in t.items())
+        # `on_recs` is omitted when unused, so a sweep without the hook prints exactly what it
+        # always did.
+        print("[sweep_mode_a_cached] "
+              + "  ".join(f"{k}={v:.1f}s" for k, v in t.items() if k != "on_recs" or v > 0)
               + f"  total={sum(t.values()):.1f}s")
     return curve, n_eval_per_k
 
