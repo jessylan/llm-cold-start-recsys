@@ -1,254 +1,434 @@
 # Who gets exposure, and how do we turn it on?
 
-> **Status: not wired in.** Nothing imports `recsys/equity_metrics.py` — no module, no
-> notebook. That is deliberate; it is planned future work, not an oversight. This document
-> is therefore written as an **integration spec**: what the module does, where it would
-> slot in, what the notebook cell looks like, and what has to be fixed or produced first.
+> **Status: built, not yet run.** Steps 1–7 are complete: `equity_metrics.py` is rewritten,
+> `content.canonical_creator` gives it the model's own provider partition, `eval.py` carries the
+> `on_recs` hook, `steel_thread.ipynb` has Section 9c, and the results reach W&B, the persisted
+> pickle/JSON and the recap. Gated by `bench_28` (22 checks) and `bench_29` (46), both pure CPU.
+> **No equity number in this document has been produced by a real run.** The first 9c attempt
+> crashed on the CBHCF arm — see § 2, which that crash forced us to reverse — and it has not been
+> re-run since the fix.
 >
-> **Do not wire it in as-is.** There is a blocking id-format mismatch (§ "Blocker 1") that
-> makes it return a plausible, wrong answer rather than raising. Read that section first.
+> This document was originally an *integration spec* listing three blockers and four open
+> questions. All seven are resolved and recorded below, along with the four defects (§ D1–D5) the
+> rewrite fixed — every one of which returned a plausible wrong answer rather than raising, which
+> is why they survived. It is kept as the reasoning behind each choice, so a reviewer can argue
+> with a decision rather than reverse-engineer it.
 
 `eval.py` asks an item-side question: *did the cold item become retrievable?*
 `equity_metrics.py` asks the provider-side companion: *whose items are actually getting
 recommended, and is exposure concentrating on providers who are already well represented?*
-Same `(models, dataset, k_levels)` convention, same `fold_in` + `recommend` calls, same
-curve shape — so it plots on the same x-axis as the warm-up curve.
+Same `(models, dataset, k_levels)` convention, same curve shape — so it plots on the same
+x-axis as the warm-up curve.
+
+The experiment's whole design is that all four arms wrap the **same ten ALS fits** and the
+same frozen user factors. So the headline is not the absolute Gini — that is mostly a fact
+about the Amazon Books catalogue — but the **difference between arms at matched `k`**, which
+is attributable to the item representation and nothing else. Concentration and redistribution
+are different questions and the doc reports both.
 
 ```mermaid
 flowchart TD
-    subgraph EXISTS["exists today - recsys/equity_metrics.py"]
-        LPM["load_provider_metadata<br/>books author_name, movies store"]
-        BIPM["build_item_provider_map<br/>-&gt; provider_of: object array, len n_items"]
-        GINI["gini_coefficient<br/>0 = equality, 1 = one provider has everything"]
-        PEC["provider_exposure_counts<br/>rec_ids.ravel() -&gt; Series provider -&gt; count"]
-        CSH["catalog_share<br/>provider -&gt; fraction of (cold) catalog"]
-        ER["equity_ratio<br/>exposure_share / catalog_share"]
-        EPE["evaluate_provider_equity_at_k<br/>one reveal level"]
-        SPE["sweep_provider_equity<br/>loops k, averages over seeds"]
+    subgraph ID["provider identity - Step 1"]
+        META["books_meta_5core_common.parquet<br/>author_name, store"]
+        CC["content.canonical_creator<br/>SHARED with the model feature space"]
+        META --> CC
+        CC --> PMAP["equity_metrics.build_provider_codes<br/>codes int32 n_items, names, n_providers"]
+        DS(["load.Dataset<br/>index_to_item = raw parent_asin"]) --> PMAP
+        POOL(["model._candidate_ids<br/>provider universe"]) --> PMAP
     end
 
-    subgraph NEEDED["prerequisites - NOT satisfied today"]
-        P1["books_meta_common.parquet<br/>movies_meta_common.parquet<br/>0-core, on disk, undocumented in README"]
-        P2["item ids that MATCH<br/>dataset.index_to_item<br/>BLOCKER 1"]
-        P3["a books+movies Dataset<br/>load_dataset reads ONE parquet<br/>BLOCKER 2"]
+    subgraph ACC["exposure accumulation - Steps 3 and 4"]
+        H["eval.sweep_mode_a_cached<br/>on_recs hook - FREE, eval users"]
+        F["equity_metrics.sweep_provider_equity_full<br/>own warm cache - common_covered_users"]
+        C["equity_metrics.ceiling_equity<br/>fold_in_ceiling asymptote"]
+        H --> EA
+        F --> EA
+        C --> EA
+        EA["ExposureAccumulator<br/>one weighted bincount per discount"]
     end
 
-    P1 --> LPM
-    LPM -->|"Series: 'book_'+asin -&gt; provider"| BIPM
-    P2 -.->|"missing"| BIPM
-    DS(["load.Dataset"]) --> BIPM
-    P3 -.->|"missing"| DS
-    BIPM --> PROV(["provider_of<br/>item_index -&gt; provider_id"])
-
-    PROV --> EPE
-    MODELS(["seed_models<br/>same list eval.sweep gets"]) --> EPE
-    EPE -->|"model.fold_in(dataset, k)"| FOLD["folded"]
-    FOLD -->|"recommend(ALL n_users, N=K)<br/>SCALE RISK - see Blocker 3"| RECS["rec_ids: (n_users, K)"]
-    RECS --> PEC
-    RECS --> ER
-    PEC --> GINI
-    CSH --> ER
-    GINI --> OUT1["gini"]
-    ER --> OUT2["cold_equity_ratio_mean"]
-    OUT1 --> SPE
-    OUT2 --> SPE
-    SPE --> CURVE(["curve: gini + cold_equity_ratio_mean<br/>{mean: [...], std: [...]} per k<br/>SAME SHAPE as eval.sweep"])
-
-    EVS["eval.sweep / sweep_mode_a_cached<br/>NDCG, Recall, AUC per k"] --> PLOT(["one plot, one x-axis:<br/>accuracy vs equity across k"])
+    PMAP --> EA
+    EA --> DISC["discount schemes<br/>uniform at 10/20/100, log, RBP 0.80/0.90/0.95"]
+    DISC --> G["gini over the FULL provider universe<br/>zero-exposure providers included"]
+    DISC --> R1["catalog equity ratio<br/>all exposure / all catalog"]
+    DISC --> R2["cold equity ratio<br/>cold exposure / cold catalog"]
+    DISC --> R3["merit equity ratio<br/>exposure / held-out relevance mass"]
+    TM(["dataset.test_matrix<br/>NaN unless scored users == merit users"]) --> R3
+    R1 --> ST
+    R2 --> ST
+    R3 --> ST
+    ST["ratio_stats<br/>exposure-weighted mean, geometric mean,<br/>median, p10-p90, fraction below 1"]
+    G --> CURVE
+    ST --> CURVE
+    CURVE(["curve per arm per k<br/>plus across-seed variance"])
+    EVS["eval.sweep - NDCG, Recall, AUC per k"] --> PLOT
     CURVE --> PLOT
-
-    classDef blocked stroke-dasharray: 5 3
-    class NEEDED,P2,P3 blocked
+    PLOT(["Section 9c: accuracy and equity on one x-axis<br/>reported as BETWEEN-ARM DELTAS"])
 ```
 
 ## Node reference
 
+Line references are given where they are stable; symbols added by this work live in
+`recsys/equity_metrics.py` unless noted.
+
+Also in the module and not listed separately: `covered_users` / `common_covered_users` (which
+users an arm can be scored on — see § 2) and `EQUITY_METRICS_VERSION` (stamped into persisted
+results, since data fingerprints cannot see a change to what a metric means).
+
 | Node | Source | Purpose |
 |---|---|---|
-| `load_provider_metadata` | [equity_metrics.py:25](../recsys/equity_metrics.py:25) | Reads two metadata parquets, returns one `Series: item_id -> provider_id`. Books use `author_name`, movies use `store`. Missing values become `"UNKNOWN"` rather than being dropped, so every item keeps a row. |
-| `build_item_provider_map` | [equity_metrics.py:54](../recsys/equity_metrics.py:54) | Converts that Series to `provider_of[item_index]`, aligned to `dataset.index_to_item`. |
-| `gini_coefficient` | [equity_metrics.py:70](../recsys/equity_metrics.py:70) | Standard Gini over non-negative values. 0 = perfect equality, 1 = maximal concentration. |
-| `provider_exposure_counts` | [equity_metrics.py:82](../recsys/equity_metrics.py:82) | Flattens `rec_ids` across every user and slot, maps to providers, counts. |
-| `catalog_share` | [equity_metrics.py:91](../recsys/equity_metrics.py:91) | Each provider's fraction of the catalog, or of a masked sub-population (the cold items). |
-| `equity_ratio` | [equity_metrics.py:100](../recsys/equity_metrics.py:100) | `exposure_share / catalog_share`. 1.0 = proportional; >1.0 = over-exposed. The "rich get richer" check. |
-| `evaluate_provider_equity_at_k` | [equity_metrics.py:128](../recsys/equity_metrics.py:128) | One reveal level. Mirrors `eval.evaluate_at_k`: same `train_k` construction, same `fold_in`, then `recommend`. Returns `{"gini", "cold_equity_ratio_mean"}`. |
-| `sweep_provider_equity` | [equity_metrics.py:156](../recsys/equity_metrics.py:156) | Loops `k_levels`, averages across seeds. Returns the same `{metric: {"mean": [...], "std": [...]}}` shape as `eval.sweep`. |
-| `_check_model` | [equity_metrics.py:120](../recsys/equity_metrics.py:120) | Protocol guard. Its message is stale — see Drift item 2. |
+| `canonical_creator` | [content.py:174](../recsys/content.py:174) | One definition of "who made this item," shared by the TF-IDF creator role and the equity provider map. Wraps the existing `_clean_entity` and the `author_name → store` fallback. |
+| `_clean_entity` | [content.py:107](../recsys/content.py:107) | Strips the `(Author)` role suffix, lowercases, strips punctuation, collapses whitespace, applies the storefront blocklist. Already runs today — but inside the vectorizer, producing tokens rather than a reusable id. |
+| `build_provider_map` → `ProviderMap` | `equity_metrics.py` | Returns integer codes, not an object array. This is what makes the full population affordable at all — see § D3. |
+| `gini` | rewrite of [equity_metrics.py:70](../recsys/equity_metrics.py:70) | Gini over the full provider universe, zeros included. |
+| `discount_weights` | `equity_metrics.py` | Length-`K` position-weight vector per scheme. |
+| `ExposureAccumulator` | `equity_metrics.py` | Consumes `rec_ids` per `(k, seed)`, one weighted `bincount` per discount scheme. |
+| `equity_ratio_table` | rewrite of [equity_metrics.py:100](../recsys/equity_metrics.py:100) | Exposure share ÷ reference share, with numerator and denominator over the *same* population — see § D4. |
+| `ratio_stats` | `equity_metrics.py` | The six summaries that replace the single unweighted mean at [equity_metrics.py:151](../recsys/equity_metrics.py:151). |
+| `merit_shares` | `equity_metrics.py` | Provider merit from held-out relevance, `bincount` over `dataset.test_matrix`. |
+| `sweep_provider_equity_full` | `equity_metrics.py` | Builds its own warm cache via [cf.py:188](../recsys/cf.py:188) over whatever `users` it is given, and preflights coverage before doing any work. |
+| `ceiling_equity` | `equity_metrics.py` | `fold_in_ceiling` analog of [eval.ceiling_reference](../recsys/eval.py:107) — resolves old open question 3. |
+| `on_recs` hook | [eval.py:315](../recsys/eval.py:315) | Hands the already-computed `rec` to a callback before it is reduced to metrics, so a second measurement over the same lists costs no retrieval. `eval.py` learns nothing about providers. Omitted from the timing line when unused, so a sweep without it prints exactly what it always did. |
+| `evaluate_provider_equity_at_k` / `sweep_provider_equity` | [equity_metrics.py:128](../recsys/equity_metrics.py:128), [:156](../recsys/equity_metrics.py:156) | Kept as the generic protocol-only path: needed for the Popularity floor, which has no warm cache, and as the reference implementation `bench_28` checks the fast path against. |
 
-## Where it slots in
+## The five choices that define the measurement
 
-`sweep_provider_equity` is a **sibling of `eval.sweep`, not a stage in it**. Both take the
-same `(models, dataset, k_levels, K)` and both return a per-`k` curve, so the intended
-usage is one extra call in the same notebook cell, on the same `seed_models` list — the
-module docstring says exactly this ([equity_metrics.py:115-117](../recsys/equity_metrics.py:115)).
+Each of these was implicit in the module as written. Making them explicit is most of the work.
 
-Concretely, in `steel_thread.ipynb` this belongs beside the Section 9 sweep (cell 20). It
-does **not** belong inside `eval.sweep_mode_a_cached`: that function's whole design is
-reusing a cached warm top-N and re-scoring only the cold block, whereas provider equity
-needs the *full* recommendation list for *every* user, which is the one thing the cache
-optimization does not produce.
+### 1. Provider identity — shared with the model, or it measures nothing
 
-## The notebook cell, once the blockers are cleared
+`content.py` already normalizes creators, but as TF-IDF tokens. If equity reads raw
+`author_name` off the parquet it partitions the catalogue differently from the way the model
+sees it, and the fairness number describes a grouping the model never had access to.
 
-```python
-from recsys import equity_metrics as eq
+The shared function also fixes coverage: `author_name` alone is 87.9% populated; the
+`author_name → store` fallback reaches ~99.5% ([content.py:84-85](../recsys/content.py:84)).
+That alone takes `UNKNOWN` from ~12% to ~0.5%.
 
-# --- one-time: item -> provider map -------------------------------------------------
-provider_series = eq.load_provider_metadata(
-    books_meta_path="../data/filtered/books_meta_common.parquet",
-    movies_meta_path="../data/filtered/movies_meta_common.parquet",
-)
-provider_of = eq.build_item_provider_map(provider_series, dataset)
+Two things are deliberately **not** shared:
 
-# Sanity gate -- see Blocker 1. Without this the module returns gini=0.0 silently.
-unknown_frac = (provider_of == "UNKNOWN").mean()
-assert unknown_frac < 0.5, f"provider map is {unknown_frac:.1%} UNKNOWN -- id format mismatch?"
+- **`min_df=2` singleton dropping** ([content.py:42-46](../recsys/content.py:42)) is a
+  modelling correctness fix — a term appearing in one item cannot produce item-item
+  similarity. For equity the reverse holds: a one-book author with zero exposure is exactly
+  what a Gini must count. 57.0% of distinct Books authors are singletons, so sharing this
+  would gut the provider universe.
+- **The storefront blocklist** ([content.py:73](../recsys/content.py:73)) drops publisher
+  storefronts to empty. Here those items become `UNKNOWN` rather than disappearing, so
+  catalog share stays a true fraction of the catalogue.
 
-# --- the sweep, alongside ev.sweep on the same seed_models ---------------------------
-equity_curve = eq.sweep_provider_equity(
-    als_models, dataset, provider_of, k_levels=K_LEVELS, K=K
-)
+#### Creator tokenization fix (Step 1, changes the models)
 
-# curve["gini"]["mean"] and curve["cold_equity_ratio_mean"]["mean"] are lists over
-# K_LEVELS -- same x-axis as ev.sweep's NDCG/AUC curves, so they plot together.
+Building the shared function surfaced a defect in the tokenization *both* callers depend on.
+`_as_entities` split on commas before `_clean_entity` could strip the role suffix, and
+`_ROLE_SUFFIX` only matches a suffix ending in `)`, so a multi-role credit split
+mid-parenthesis:
+
+```
+"Charles Platt (Author)"          -> ['charles platt']                     was correct
+"Brandon Graham (Author, Artist)" -> ['brandon graham author', 'artist']   was corrupted
+"A (Author, Artist), B (Author)"  -> ['a author', 'artist', 'b']           was corrupted
 ```
 
-## What has to be true first
+One person therefore tokenized differently depending on how many roles they were credited
+with. This was live in the **model's** creator block, not just in equity — reachable wherever
+the creator role falls through to `store`, the ~12% of Books items `author_name` leaves empty.
+Fixed with `_ENTITY_COMMA`, which splits only on commas outside parentheses; all three cases
+above now give `['charles platt']`, `['brandon graham']`, `['a', 'b']`.
 
-### Blocker 1 — item-id format mismatch (silent, returns a wrong answer)
+**This changes CBHCF and Intervention A.** It invalidates `books_content_tfidf_*`,
+`cbhcf_content_*` and `ia_steel_*` in `data/cache/`, and strictly it also invalidates the
+lambdas tuned on `cold_val`. Accepted deliberately, with one full re-run afterwards.
 
-`load_provider_metadata` builds its index with a domain prefix:
+Surname-first names remain ambiguous with a two-person list at this layer — `"King, Stephen"`
+still yields `['king', 'stephen']`, and primary-entity-wins then picks `king`. Not fixable
+without name heuristics or an authority list; pinned by `bench_28` so a future
+entity-resolution change has to face the test rather than slip past it. Deeper entity
+resolution stays **out of scope** — see § Deliberately not doing.
 
-```python
-index="book_" + books_meta["parent_asin"].astype(str)   # equity_metrics.py:43
-index="movie_" + movies_meta["parent_asin"].astype(str) # equity_metrics.py:48
-```
+### 2. Population — the eval users, because the hybrids cannot be scored on any other
 
-But `load.load_dataset` builds `index_to_item` from the **raw, unprefixed** `parent_asin`:
+**This decision was reversed after the first run crashed, and the original reasoning below was
+wrong about what was computable.** The estimand argument still holds: exposure is a count of
+impressions across the surface you serve, so the whole population is what one would want, and
+eval.py's restriction to users with a held-out item does not transfer (it is exact for a
+macro-average; it is not exact for a count).
 
-```python
-item_cat = df["parent_asin"].astype("category")          # load.py:222
-index_to_item = dict(enumerate(item_cat.cat.categories)) # load.py:226
-```
+But CBHCF and Intervention A score their content half from a PRECOMPUTED user x item block
+(`cbhcf.build_content_cache`). At Books scale that block is 12,382 users x 246,687 warm items =
+**6.1 GB at fp16**, so the full 384,339-user population would be **~189 GB per arm**, and there are
+two arms. It is not a budget problem — a block that size could never be swapped onto a 24 GB card,
+so widening it would break Section 9's `activate()` scheme as well. `scores.DenseItemBlock` raises
+`KeyError` for any user outside the block; the first 9c run died there ten minutes in, on the CBHCF
+arm, after ALS had completed.
 
-So every `lookup.get(item_id, "UNKNOWN")` in `build_item_provider_map`
-([equity_metrics.py:61](../recsys/equity_metrics.py:61)) misses, and **every item maps to
-`"UNKNOWN"`**.
+So **every arm is measured over `equity_metrics.common_covered_users(...)`** — the intersection of
+what all arms can score, which is the eval-user set. Measuring ALS over 384k and the hybrids over
+12k would make the between-arm difference, the entire point of the section, uninterpretable.
 
-This does not raise. It produces a coherent-looking result: one provider holds 100% of
-exposure and 100% of catalog share, so `gini_coefficient` of a single-element array returns
-`0.0` and `cold_equity_ratio_mean` returns `1.0` — literally "perfectly equitable exposure."
-That is the most dangerous possible failure mode for a fairness metric, which is why the
-`assert` in the cell above is not optional.
+`sweep_provider_equity_full`, `sweep_provider_equity` and `ceiling_equity` all preflight this and
+raise in seconds with the numbers above, rather than failing deep inside a score source after doing
+most of the work.
 
-The prefixed convention comes from the deleted `data_cleaning.ipynb`'s unified item table
-(the deprecation note at [equity_metrics.py:28](../recsys/equity_metrics.py:28) marks
-exactly this). **Nothing in the current pipeline produces prefixed ids.** Fixing it means
-choosing one of:
+**What the restriction costs, measured rather than assumed.** Two consequences, both real:
 
-- drop the prefixes in `load_provider_metadata` so it matches `load.py`'s raw `parent_asin`
-  (simplest; correct as long as the `Dataset` is single-domain), or
-- reintroduce prefixed ids in `load.load_dataset` (needed anyway for Blocker 2, since raw
-  `parent_asin` is only unique *within* a domain).
+- the eval users are exactly those holding a held-out *cold* interaction, so they over-represent
+  cold-affine taste and will flatter cold-item providers;
+- the set is thin — ~137k providers against 12,382 x K impressions is ~9 each, so absolute Gini
+  partly measures small-sample zeros. (This was the argument FOR the full population; it now
+  applies to what is actually being reported.)
 
-### Blocker 2 — the module assumes books + movies; the pipeline loads one domain
+ALS and Popularity *can* be scored both ways, so Section 9c reports a **population sensitivity**
+table at k=0 and k=20. Popularity is the control, not a second data point: its ranking is
+user-independent, so its delta isolates the effect of *which* users are scored with personalisation
+held out, and the gap between ALS's delta and Popularity's is the part attributable to
+personalisation meeting cold-affine taste. One arm could not separate those.
 
-`load_provider_metadata` concatenates a Books provider series and a Movies one, but
-`load.load_dataset`'s `data_path` defaults to `books_5core_common.parquet`
-([load.py:151](../recsys/load.py:151)) and both notebooks pass exactly that. A Books-only
-`Dataset` contains no movie items, so the entire Movies half of the provider map is dead
-weight — and `store` versus `author_name` is not a like-for-like provider field anyway
-(the docstring flags this as a methodology caveat, not an equivalence).
+**Merit ratio is excluded from that comparison**, and from any run whose scored users are not
+exactly the merit users. Merit is derived from `dataset.test_matrix` — i.e. from the eval users —
+so dividing full-population exposure by it mixes populations, which is D4 in a new outfit.
+`ExposureAccumulator` takes the scored user set, compares it against the merit population, and
+returns NaN for the three `merit_ratio.*` statistics when they differ. Catalog share is unaffected:
+it counts items, not users.
 
-Either the equity work runs Books-only for now (drop the movies argument), or a combined
-interaction table has to be built first — which is also what would force the prefixed ids
-of Blocker 1, since `parent_asin` is not unique across domains.
+### 3. Exposure weighting — four schemes, one pass
 
-### Blocker 3 — it recommends for every user
+Uniform-over-top-100 is not the absence of a user model, it is the claim that a user attends
+to rank 100 exactly as much as rank 1. Relative weight by rank, and the share of total
+exposure mass landing in the top 10:
 
-`evaluate_provider_equity_at_k` scores the **entire** user population:
+| scheme | r=1 | r=5 | r=10 | r=20 | r=50 | r=100 | mass in top-10 |
+|---|---|---|---|---|---|---|---|
+| uniform@100 (module as written) | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 10.0% |
+| uniform@10 | 1.000 | 1.000 | 1.000 | 0 | 0 | 0 | 100% |
+| log `1/log2(1+r)` | 1.000 | 0.387 | 0.289 | 0.228 | 0.176 | 0.150 | 21.7% |
+| Zipf `1/r` | 1.000 | 0.200 | 0.100 | 0.050 | 0.020 | 0.010 | 56.5% |
+| RBP p=0.95 | 1.000 | 0.815 | 0.630 | 0.377 | 0.081 | 0.006 | 40.4% |
+| RBP p=0.90 | 1.000 | 0.656 | 0.387 | 0.135 | 0.006 | 0.00003 | 65.1% |
+| RBP p=0.80 | 1.000 | 0.410 | 0.134 | 0.014 | ~0 | ~0 | 89.3% |
 
-```python
-user_ids = np.arange(dataset.n_users)                                    # equity_metrics.py:141
-rec_ids, _ = folded.recommend(user_ids, train_k[user_ids], N=K, ...)     # equity_metrics.py:142
-```
+**log is the headline**, for a coherence reason rather than a behavioural one: the accuracy
+metric is NDCG, which uses exactly `1/log2(1+r)`. Sharing the discount means the accuracy
+curve and the equity curve describe the same hypothetical user; mixing NDCG@100 with
+RBP-weighted exposure puts two different users in one figure. **uniform** is reported as the
+no-model baseline and for continuity. **RBP p=0.90** is the behaviourally-motivated one — its
+parameter has a meaning (expected examination depth `1/(1-p)` ≈ 10 items), so it can be argued
+with directly; p ∈ {0.80, 0.95} is the sensitivity band.
 
-At the recorded scale that is 384,339 users × K=100 → a 384,339 × 100 `int64` array
-(~307 MB) per `(seed, k)`, then `provider_of[flat_items]` builds a **38.4-million-element
-Python-object array** which `pd.Series(...).value_counts()` must hash. Multiply by
-`len(k_levels) = 21` and `N_SEEDS = 10`.
+Cascade models (ERR, DBN) are rejected: the discount becomes relevance-dependent and per-list,
+so exposure stops being a fixed weight vector, and with sparse binary held-out relevance most
+lists contain nothing relevant, the cascade never terminates, and it degenerates toward `1/r`.
+Empirical position-bias curves are the right answer when you have impression logs; Amazon
+Reviews 2023 is a review corpus with none. Both belong in the limitations paragraph.
 
-By contrast every `eval.py` path restricts to users with a held-out test item
-([eval.py:54](../recsys/eval.py:54)) — an exact optimization there, because users with no
-test item cannot affect a macro-average.
+Extra `K` values are free — top-10 ⊂ top-100, so uniform@10 and @20 are truncations of the
+same array with no rescoring.
 
-That reasoning does **not** transfer: exposure genuinely is a property of the whole
-recommendation surface, so restricting the user set changes the measurement rather than
-optimizing it. This is a real design decision to make, not a bug to fix. Options: sample a
-fixed user subset and document it, or switch `provider_of` to integer codes so the
-exposure count becomes a `np.bincount` instead of a pandas object-hash.
+**Caution for the writeup:** Gini on discounted exposure is *mechanically* higher than on
+uniform exposure, because the mass was concentrated before its concentration was measured.
+Schemes are comparable only within-scheme across arms. A move from 0.82 to 0.91 that is
+really a change of weight vector must not be read as a finding.
 
-### Prerequisite — the 0-core metadata files
+### 4. What counts as fair — three reference shares
 
-The module needs `books_meta_common.parquet` and `movies_meta_common.parquet` — the
-**unfiltered 0-core** metadata, not the `*_meta_5core_common.parquet` files the rest of the
-pipeline uses. Both exist under `data/filtered/` and are produced by
-`data_filtering.ipynb`; they are simply not listed in the README's data table. No new
-pipeline stage is required, only a download-table entry if a teammate is starting from the
-fast path.
+`equity_ratio` encodes *item-proportional* fairness: you deserve exposure in proportion to how
+many items you have. Defensible and transparent, but it implies a provider who uploads 10,000
+items deserves 10,000× the attention. So three reference shares are reported:
 
-## Design notes worth preserving
+1. **Catalog share, all items** — the transparent baseline.
+2. **Catalog share, cold items only** — the population the interventions target.
+3. **Merit share** — `merit_p = Σ rel(u,i)` over that provider's items, with `rel(u,i) = 1`
+   iff `(u,i) ∈ test_matrix`. Computed both over all held-out interactions and cold-only.
+   Restricted to providers with nonzero merit, since with 13,635 cold held-out interactions
+   across 136,602 providers most merit is zero.
 
-**Why `author_name` and `store`, not `main_category`/`categories`.** Category fields
-describe what an item *is* (genre, type), not who *made* it. Using them would conflate
-content-type equity with provider equity. `store` is Amazon's storefront/brand field and is
-an imperfect analog to an author for movies — the docstring is explicit that this is a
-methodology caveat, not an equivalence.
+Model scores as relevance is rejected as circular — grading a model's fairness against its own
+relevance estimate is close to vacuous. Training-set degree as merit is rejected for the
+headline: it defines deserved exposure as historical popularity, which prejudges the
+rich-get-richer question. It stays available as a named contrast.
 
-**Why `"UNKNOWN"` instead of dropping.** Every item keeps a row, so catalog share stays a
-true fraction of the catalog. This is the right choice — and it is also precisely what makes
-Blocker 1 silent.
+**The discount must match.** A position-discounted numerator over an undiscounted merit
+denominator reintroduces § D4 in a new form. The merit target is the exposure the relevant
+items would receive under an ideal ranking, built with the same weight vector.
+
+### 5. Aggregation — six summaries, not one mean
+
+The single unweighted mean over providers at
+[equity_metrics.py:151](../recsys/equity_metrics.py:151) is dominated by the thousands of
+one-book authors, each contributing a wildly noisy ratio. Reported instead:
+
+| Statistic | What it answers |
+|---|---|
+| Exposure-weighted mean, `Σ_p exposure_share_p × ratio_p` | What the average *impression* sees. Head-dominated by construction — that is the point. |
+| Unweighted mean | What the average *provider* gets. Kept for continuity; noisy. |
+| Geometric mean | Central tendency that respects the fact that ratios are multiplicative. |
+| Median, p10/p25/p75/p90 | The distribution the means collapse. |
+| Fraction with ratio < 1 | Blunt headline: what share of providers are under-exposed relative to footprint. |
+
+Ratios must not be averaged in linear space beyond the exposure-weighted one: 4× and 0.25×
+average to 2.1×, not 1.0. Percentiles are invariant to this, so they are safe as reported.
+
+## Defects in the module as it stands
+
+### D1 — item-id format mismatch (silent, returns a wrong answer)
+
+`load_provider_metadata` builds its index with a domain prefix
+([equity_metrics.py:43](../recsys/equity_metrics.py:43), [:48](../recsys/equity_metrics.py:48)),
+but `load.load_dataset` builds `index_to_item` from the **raw, unprefixed** `parent_asin`
+([load.py:238](../recsys/load.py:238)). Every lookup misses and every item maps to `"UNKNOWN"`.
+
+This does not raise. One provider holds 100% of exposure and 100% of catalog share, so
+`gini_coefficient` of a single-element array returns `0.0` and the ratio returns `1.0` —
+literally "perfectly equitable exposure." The most dangerous possible failure mode for a
+fairness metric.
+
+The prefixed convention comes from `notebooks/data_cleaning.ipynb`, which builds a unified
+books+movies item table with `book_`/`movie_` ids. (The previous version of this doc said that
+notebook was deleted in `f61dfca`. It is not — it is on disk and still produces prefixed ids.
+What is true is that it is **not on the current path**: `load.load_dataset` reads
+`books_5core_common.parquet`, produced by `data_filtering.ipynb`, with raw `parent_asin`. So
+the conclusion is unchanged — nothing feeding this pipeline produces prefixed ids — but the
+reason is "different pipeline," not "deleted file.")
+
+**Resolution:** drop the prefixes, Books-only. Prefixes only return if a combined books+movies
+`Dataset` is ever built from `data_cleaning.ipynb`'s table. The `assert unknown_frac < 0.02`
+gate in Section 9c is not optional regardless.
+
+### D2 — Gini omits providers who received nothing
+
+`provider_exposure_counts` ([equity_metrics.py:82](../recsys/equity_metrics.py:82)) returns
+`value_counts()`, which drops zero-exposure providers entirely. With 136,602 providers and a
+heavy-tailed recommender, most receive nothing — and they are precisely the observations a
+Gini exists to count. The reported inequality comes out drastically too *equal*.
+
+**Resolution:** `np.bincount(codes, minlength=n_providers)` over the fixed universe of every
+provider with ≥1 item in the candidate pool. `bench_28` carries a regression case.
+
+### D3 — 38.4M Python string hashes per `(seed, k)`
+
+`provider_of[flat_items]` on a `dtype=object` array builds a 38.4M-element array of string
+references, and `pd.Series(...).value_counts()` hashes all of them. Order 30–60 s per
+`(seed, k)`, times 210, times four arms — most of a day, and the reason the full population
+looked infeasible. It is a property of the dtype, not of the user count: with integer codes
+the same step is a `bincount` at ~0.3 s.
+
+**Resolution:** integer codes throughout. The full population then costs ~10–20 min of GPU
+work plus ~7 min of counting.
+
+### D4 — `equity_ratio` divides shares with different denominators
+
+`exposure_share` is over *all* recommendations (overwhelmingly warm items); `catalog_share` is
+over *cold items only* when the mask is passed
+([equity_metrics.py:105-110](../recsys/equity_metrics.py:105)). A large warm publisher with
+one cold title collects a huge ratio from warm exposure it never earned in the cold catalogue,
+and `cold_equity_ratio_mean` is dominated by exactly those.
+
+**Resolution:** two clean ratios, each with numerator and denominator over the same
+population — § "What counts as fair" above.
+
+### D5 — host RAM at full population
+
+`_warm_cache` ([cf.py:188](../recsys/cf.py:188)) is stored per model and never freed. At
+384,339 users it is 460 MB per seed; ten live seeds is 4.6 GB. Not a defect at the eval-user
+scale where it is 15 MB. **Resolution:** clear it after each seed in the full-population pass.
+
+## Ranking stochasticity — noted, not fixed
+
+A deterministic top-K makes some of the measured inequality an artifact of the serving rule.
+Two items whose scores differ by 1e-9 land at ranks 1 and 2; under a log discount that is a
+~60% attention gap generated by noise. And every user with similar taste receives the
+identical list, so concentration is guaranteed before the model contributes anything.
+
+The theoretical fix is a stochastic ranking policy evaluated on *expected* exposure — Singh &
+Joachims (KDD 2018), whose LP over doubly-stochastic matrices is Birkhoff–von Neumann
+decomposed into servable permutations; or Plackett–Luce sampling, under which a 1e-9 score gap
+produces a 1e-9 exposure gap; with the metric side from Diaz et al. (CIKM 2020).
+
+**Not done here**, because it changes the *serving policy*, not the metric: once rankings are
+stochastic, NDCG/Recall/AUC must be re-measured under the same policy or the figure describes
+two different systems. That is a separate experiment.
+
+**Done instead, for free:** per-provider exposure share is computed separately for each of the
+ten seeds and its across-seed variance reported. If Gini is stable across seeds while
+individual providers' shares swing, the concentration is real but the identity of who occupies
+the head is substantially arbitrary — which is the near-tie amplification, measured directly.
+
+## Design notes preserved from the original spec
+
+**Why `author_name`, not `main_category`/`categories`.** Category fields describe what an item
+*is* (genre, type), not who *made* it; using them would conflate content-type equity with
+provider equity.
+
+**Why `store` is not used as a provider field on its own.** On Books it is mostly an author
+page (91.9% of values map to a single author) but is contaminated by publisher storefronts,
+which would make every DK Publishing title "by the same creator"
+([content.py:70-76](../recsys/content.py:70)). It is used only as the fallback when
+`author_name` is empty, and the blocklist catches the known storefronts. Movies' `store` holds
+a cast list and is not an author analog at all — one more reason this is Books-only.
+
+**Why `"UNKNOWN"` instead of dropping.** Every item keeps a row, so catalog share stays a true
+fraction of the catalogue. Right choice — and also precisely what makes D1 silent.
 
 **`RENAME PENDING` markers.** Three sites
 ([equity_metrics.py:134](../recsys/equity_metrics.py:134),
 [:138](../recsys/equity_metrics.py:138), [:168](../recsys/equity_metrics.py:168)) note that
 `k` means interaction count here, matching `eval.py`, and that renaming to `n` should wait
-until `eval.py`'s `k` is renamed too. Keep them in step.
+until `eval.py`'s `k` is renamed too. Keep them in step; the rewrite carries them forward.
 
----
+## Implementation steps
+
+| Step | Deliverable |
+|---|---|
+| 1 | **Done.** `content.canonical_creator` + `bench_28_creator_entities.py`. No vectorizer refactor was needed — the function composes `build_documents` and `_entity_analyzer`, which the vectorizer already uses, so the shared definition flows the right way with no risk to CBHCF/IA. Also fixed `_as_entities`' comma split (§ Creator tokenization fix). |
+| 2 | **Done.** `recsys/equity_metrics.py` rewritten: `ProviderMap` integer codes, D2/D4 fixes, seven discounts, three reference shares, `ratio_stats`, `ExposureAccumulator`. |
+| 3 | **Done.** `on_recs(ki, si, rec)` in `eval.sweep_mode_a_cached`, with its own timing bucket. Every existing caller passes the first three arguments positionally and the rest by keyword, so the trailing parameter is backwards-compatible. |
+| 4 | **Done.** `sweep_provider_equity_full` (own warm cache, whole population, D5 clear per seed) + `ceiling_equity` via `fold_in_ceiling`. Both reuse `fold_in`'s memo, so running in the same session as Section 9's sweep makes the fold-ins free. |
+| 5 | **Done.** `bench_29_provider_equity.py` — 46 checks, pure CPU: equity primitives, D1/D2/D4 regressions, hook mechanics, cached-vs-generic parity, D5, the ceiling, and the no-warm-cache guard. |
+| 6 | **Done (written, not yet run).** Notebook Section 9c — provider map + the `UNKNOWN` assert, the full-population pass per arm plus its ceiling, the readout, the discount-sensitivity table, the seed-stability diagnostic, and `warmup_equity_mode_a.png`. Popularity and Intervention B are behind flags (`RUN_POP_EQUITY` defaults False — the generic path's cost at 384k users is unmeasured). |
+| 7 | **Done.** W&B `equity/*` against step `k` on each arm's run (plus ceiling and per-discount Gini as summaries), `results["mode_a"]["equity"]` with `EQUITY_METRICS_VERSION` in the config block, a RESULTS RECAP section, Section 12 prose, and this doc. `pop_run.finish()` moved from Section 9 to 9c so Popularity's equity arm is logged before its run closes. No README change needed — `books_meta_5core_common.parquet` was already in the data table; the 0-core file the original spec asked for is not used. |
+
+**Cost:** ~10–20 min GPU across four arms, ~7 min counting. The eval-user pass, the extra
+discount schemes, the extra `K` values and the merit baselines are all free.
+
+**Ordering constraint:** `pop_run.finish()` fires at the end of notebook cell 23. Either the
+Popularity equity arm logs inside Section 9, or that `finish()` moves to 9c.
+
+## Deliberately not doing
+
+- **Author entity resolution** beyond the existing normalization. It would plausibly help
+  retrieval too — 57% singletons suggests recoverable mass — but it changes the item
+  representation, so it invalidates CBHCF and Intervention A, needs a lambda re-tune on
+  `cold_val`, and a full re-run. Its own experiment.
+- **Stochastic ranking policies** — see above.
+- **Movies, a combined item table, and therefore prefixed item ids.**
 
 ## Drift
 
-1. **`load_provider_metadata` docstring cites `data_cleaning.ipynb`**
-   ([equity_metrics.py:28](../recsys/equity_metrics.py:28)), deleted in `f61dfca`.
-   **Accepted** — marked deprecated in-source, pending a future commit. Note that this is
-   not only a stale doc reference: the id convention it describes is Blocker 1.
-2. **`_check_model` names a nonexistent protocol method.** Its message
-   ([equity_metrics.py:124](../recsys/equity_metrics.py:124)) says "needs fit, recommend,
-   score_matrix, and fold_in". `protocol.RetrievalModel` declares only `fit`, `recommend`,
-   `fold_in`; `score_matrix` was removed ([eval.py:476](../recsys/eval.py:476)).
-   `eval._check_model` has the correct text.
-3. **The module docstring's comparison target is stale.** The comment block at
-   [equity_metrics.py:66-67](../recsys/equity_metrics.py:66) says the metric primitives sit
-   "at the same level as eval.py's `recall_and_hit_rate_at_k`". No such function exists in
-   `eval.py`; the current equivalent is `mode_a_metrics_at_k`
-   ([eval.py:38](../recsys/eval.py:38)).
+None outstanding. The three items previously listed here were fixed by the Step 2 rewrite rather
+than merely reported: the `data_cleaning.ipynb` id-convention docstring (which was D1, and whose
+"deleted in `f61dfca`" claim was itself wrong — see § D1), `_check_model`'s reference to a
+nonexistent `score_matrix` protocol method, and the module docstring citing
+`recall_and_hit_rate_at_k` instead of `mode_a_metrics_at_k`.
 
 ## Open questions
 
-1. **Is the Books-only path acceptable for the first version?** The module is written for a
-   unified books+movies item table that the current `load_dataset` does not produce. Whether
-   the intent is to run equity Books-only or to build the combined table first is not
-   determinable from source.
-2. **Which user population should exposure be measured over?** See Blocker 3 — full
-   population is defensible and expensive; a sample changes what is being measured. No
-   recorded decision.
-3. **Should equity be reported at the ceiling too?** `eval.py` pairs every curve with a
-   `ceiling_reference`. `equity_metrics` has no `fold_in_ceiling` analog, so there is no
-   "what does provider equity look like when every cold item is fully warm" reference point.
-   Unclear whether that was considered.
-4. **No seed-averaging guard.** `sweep_provider_equity` averages `cold_equity_ratio_mean`
-   across seeds, but that value is itself a mean over providers with `NaN` entries where
-   catalog share is zero ([equity_metrics.py:110](../recsys/equity_metrics.py:110)) — the
-   inner `.mean()` skips them, the outer `np.mean` does not. Whether `NaN` can reach the
-   outer average depends on data not determinable from source.
+Resolved since the original spec: Books-only (§ D1); full population, with the eval-user subset
+available as a free robustness check (§ 2); a ceiling reference via `ceiling_equity` (Step 4);
+`nanmean` plus six summaries replacing the bare mean (§ 5); and the Popularity floor's cost, which
+was the previous question 1 — **measured**, not assumed: `PopularityModel.recommend` is vectorized
+over a global top-M, so a full-population level costs 2.3 s at max user degree ~500 and 13.4 s at
+~5,000, i.e. 0.8–4.7 min for 21 levels. It is on by default; it is also the most interpretable
+comparator here, since Popularity serves every user the same list and its Gini is therefore the
+concentration ceiling.
+
+What remains genuinely open:
+
+1. **RBP `p`.** Defaulted to 0.90 with a {0.80, 0.95} sensitivity band. There is no
+   Books-specific evidence for any value; the band is the honest representation of that.
+2. **Merit sparsity.** With 13,635 cold held-out interactions across 136,602 providers, merit
+   share is a noisy estimate for every provider near the threshold. Whether the merit ratio
+   survives that noise well enough to report as more than a directional check is an empirical
+   question the first run will answer.
+3. **Whether the equity numbers are worth reporting at all.** Nothing here has run yet. If the
+   between-arm differences are inside the across-seed band, the honest conclusion is that the
+   interventions do not measurably change provider exposure — which is a finding, and should be
+   reported as one rather than quietly dropped.

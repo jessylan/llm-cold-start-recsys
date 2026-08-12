@@ -67,6 +67,13 @@ ROLES = ("title", "creator", "taxonomy", "blurb", "reviews")
 # "Brandon Graham (Author, Artist)". Strip it so the atomic token is the person, not the credit.
 _ROLE_SUFFIX = re.compile(r"\s*\([^)]*\)\s*$")
 
+# Split a flat entity string on its separating commas ONLY -- a comma inside a parenthesised role
+# credit ("Brandon Graham (Author, Artist)") separates two ROLES of one person, not two people.
+# The negative lookahead says "this comma is not followed by a close-paren before the next
+# open-paren", i.e. we are not currently inside a credit. Non-nested parens only, which is what
+# Amazon's `store` and cast fields contain.
+_ENTITY_COMMA = re.compile(r",(?![^(]*\))")
+
 # `store` is mostly an author page (91.9% of values map to a single author) but is contaminated by
 # publisher storefronts, which would make every DK Publishing title "by the same creator". These
 # are dropped rather than tokenized. Extend as more are found; keep it visible, not buried.
@@ -129,14 +136,32 @@ def _as_text(value) -> str:
 
 def _as_entities(value) -> str:
     """Flatten to a separator-joined entity string, preserving entity boundaries (a category PATH
-    or a cast LIST must not be collapsed into prose)."""
+    or a cast LIST must not be collapsed into prose).
+
+    The comma split uses `_ENTITY_COMMA`, not a plain `split(",")`. A plain split ran BEFORE
+    `_clean_entity` could strip the role suffix, and `_ROLE_SUFFIX` only matches a suffix ending
+    in ')', so a multi-role credit split mid-parenthesis and one person got different tokens
+    depending on how many roles they were credited with:
+
+        "Charles Platt (Author)"          -> ['charles platt']                     was correct
+        "Brandon Graham (Author, Artist)" -> ['brandon graham author', 'artist']   was corrupted
+        "A (Author, Artist), B (Author)"  -> ['a author', 'artist', 'b']           was corrupted
+
+    All three are now ['charles platt'], ['brandon graham'], ['a', 'b'].
+
+    REMAINING LIMITATION, not fixable at this layer: a surname-first name is genuinely ambiguous
+    with a two-person list -- "Smith, John" is one comma-separated string either way -- so it
+    still yields ['smith', 'john']. Resolving it needs name heuristics or an authority list,
+    which is the entity-resolution work tracked separately. `canonical_creator`'s
+    `stats["multi_creator_frac"]` measures how often any item has more than one entity, which
+    bounds how much this can matter."""
     if isinstance(value, (list, tuple, np.ndarray)):
         return _ENTITY_SEP.join(str(v) for v in value if v is not None)
     if value is None or (isinstance(value, float) and np.isnan(value)):
         return ""
     # A flat cast string -- "Clint Eastwood  (Actor),     Bernadette Peters  (Actor)" -- is
     # comma-separated; a single author name has no comma and survives as one entity.
-    return _ENTITY_SEP.join(str(value).split(","))
+    return _ENTITY_SEP.join(_ENTITY_COMMA.split(str(value)))
 
 
 def build_documents(meta: pd.DataFrame, field_map: dict, n_items: int,
@@ -169,6 +194,63 @@ def build_documents(meta: pd.DataFrame, field_map: dict, n_items: int,
             out[empty] = alt[empty]
         docs[role] = out
     return docs
+
+
+def canonical_creator(meta: pd.DataFrame, n_items: int, index_to_item: dict,
+                      field_map: dict = None, unattributed: str = "UNKNOWN"
+                      ) -> tuple[np.ndarray, dict]:
+    """One canonical creator id per item_index -- the SAME notion of "who made this" the content
+    models see. Returns (creator_of, stats).
+
+    `equity_metrics` measures provider exposure over this partition. If it built its own from raw
+    `author_name` instead, it would group the catalogue differently from the way the model groups
+    it, and the resulting fairness number would describe a partition the model never had access
+    to. So this composes the two primitives the vectorizer already uses -- `build_documents`'s
+    per-item fallback chain (Books: `author_name`, else `store`) and `_entity_analyzer`'s cleaning
+    (role-suffix strip, lowercase, punctuation strip, storefront blocklist) -- rather than
+    reimplementing either. Nothing in the vectorizer path changes; both callers consume the same
+    two functions, which is what makes it one definition.
+
+    **Primary creator, not all creators.** `_entity_analyzer` yields a LIST per item (a
+    comma-separated cast list, co-authors, or a name stored surname-first as "King, Stephen"),
+    but exposure attribution needs one provider per item or an impression would have to be split
+    fractionally across co-creators. The first cleaned entity wins. `stats["multi_creator_frac"]`
+    reports how often that discards something, so the choice can be revisited against evidence
+    rather than assumed harmless -- if it is high, fractional attribution is the fix.
+
+    **No `min_df` filtering here**, deliberately. Dropping singleton terms is a correctness fix
+    for the vectorizer -- a term in exactly one item cannot produce item-item similarity, yet
+    still consumes the block's norm. The reverse holds for equity: a one-book author with zero
+    exposure is exactly the observation a Gini exists to count, and 57.0% of distinct Books
+    authors are singletons, so applying it here would gut the provider universe.
+
+    **Blocked and missing creators become `unattributed`, not dropped.** Every item keeps a row,
+    so catalog share stays a true fraction of the catalogue rather than of the attributable
+    subset. Callers should gate on `stats["unattributed_frac"]`: it is ~0.5% when the fallback
+    chain is working and jumps to ~100% if the ids ever stop matching `dataset.index_to_item`,
+    which is the one failure mode that otherwise reports itself as perfect equality.
+    """
+    field_map = BOOKS_FIELD_MAP if field_map is None else field_map
+    # Only the creator role is flattened -- build_documents skips a role whose column list is
+    # empty, so this does not pay for title/blurb/reviews just to read one field.
+    docs = build_documents(meta, {"creator": list(field_map.get("creator", []))},
+                           n_items, index_to_item)
+
+    creator_of = np.empty(n_items, dtype=object)
+    n_multi = 0
+    for i, doc in enumerate(docs["creator"]):
+        entities = _entity_analyzer(doc)
+        creator_of[i] = entities[0] if entities else unattributed
+        n_multi += len(entities) > 1
+
+    attributed = creator_of != unattributed
+    stats = {
+        "n_items": int(n_items),
+        "n_providers": int(len(set(creator_of[attributed]))),
+        "unattributed_frac": float(1.0 - attributed.mean()),
+        "multi_creator_frac": float(n_multi / n_items) if n_items else 0.0,
+    }
+    return creator_of, stats
 
 
 @dataclass
