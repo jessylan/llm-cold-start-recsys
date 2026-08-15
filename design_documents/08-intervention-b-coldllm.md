@@ -189,6 +189,38 @@ Two design points that are easy to get wrong:
   Measured here: within 17.9, between 11.6, so the requirement is **n > 1.5** and `N_PROBE = 8`
   clears it comfortably.
 
+### Why the calibrated arm is not used as evidence
+
+The break-even test above asks whether the prior is estimated *precisely* enough. It does not ask
+whether the prior is the *right quantity* — and on that, the run is unambiguous. §5f also reports:
+
+| statistic | value |
+|---|---|
+| var(score) over pairs | 16.281 |
+| var(user baseline) over pairs | 12.766 |
+| **corr(score, baseline)** | **+0.172** |
+
+If `score(u, i)` decomposed as `baseline(u) + association(u, i)`, then `cov(score, baseline) =
+var(baseline)` and the correlation would have to be `sqrt(12.766 / 16.281) = 0.885`. It is **0.172**.
+The probe baseline is close to orthogonal to the scores it is subtracted from, so subtracting it is
+not cancelling a marginal — it is adding a user-level quantity of comparable variance that barely
+tracks what it is meant to correct. That is why it reshuffles 72% of selections (Jaccard 0.161).
+
+The likely cause is a regime mismatch. Probes are 8 random warm items and score **mean +1.94**;
+candidate pairs are content-filtered to the 50 nearest users and score **median +13.43**. The
+baseline is measured where the judge is undecided and applied where it is saturated, and logit
+differences do not carry across those two regimes. Probing with real items rather than a null token
+was the right instinct — but the expectation that needed estimating was over the *item's candidate
+pool*, not over the catalogue.
+
+One consequence is systematic rather than noisy: a user with a long history is agreeable about the
+probes too, so the correction penalises exactly the high-degree users. That is how the calibrated
+arm ends up selecting users *less* active than a random draw.
+
+> **`direct_cal` is a negative result about this calibration, not a measurement of the LLM.** It
+> shows the probe-based correction is not usable as specified. It cannot, on its own, say what the
+> raw LLM score was tracking, and "What the run found" does not use it that way.
+
 ## Surviving a long run
 
 Refining is ~136,000 LLM calls per strategy plus ~630,000 for the calibration pass, across a box
@@ -274,6 +306,10 @@ scores exactly 0.000000 because the closed-form fold-in returns the zero vector:
 | **direct_cal** | **0.000000 ± 0.000000** |
 | **popularity-N** | **0.000037 ± 0.000016** |
 
+> Note that random-N is *also* exactly 0.000000 here, so this view floors out: it cannot distinguish
+> "level with random" from "below random". The paired test below, which can, puts `direct_cal`
+> below.
+
 **With the synthetic data kept out of the ALS fit (§7c)** — the controlled form. ALS alternates
 over the whole matrix, so synthetic pairs in `fit()` perturb the **user** factors too, and this
 project's controlling principle is that user preferences are fit once, frozen, and reused
@@ -309,26 +345,28 @@ noise — wrongly. Over 10 seeds (9 d.f., two-sided 5% point 2.26):
 
 | arm | mean diff vs random | sd | t | mean degree of selected users |
 |---|---|---|---|---|
-| popularity-N | +0.000173 | 0.000039 | **+14.00** | 5.88 |
-| **reasoning** | **+0.000045** | 0.000018 | **+7.72** | **3.07** |
-| direct | +0.000022 | 0.000021 | +3.35 | 3.39 |
+| popularity-N | +0.000173 | 0.000039 | **+13.98** | 5.88 |
+| **reasoning** | **+0.000045** | 0.000019 | **+7.69** | **3.07** |
+| direct | +0.000021 | 0.000021 | +3.20 | 3.39 |
 | random-N | — | — | — | 2.30 |
-| **direct_cal** | **−0.000027** | 0.000013 | **−6.61** | **2.03** |
+| **direct_cal** | **−0.000028** | 0.000014 | **−6.44** | **2.03** |
+
+> ⚠️ **The mean-degree column has no cell behind it.** Every other number in this section traces to
+> a printed output in `intervention_b_coldllm.ipynb`; this one was computed ad hoc and no revision
+> of the notebook reproduces it. The argument below leans on it, so treat it as provisional until
+> the notebook prints it.
 
 **Every arm differs significantly from random.** The LLM's ordering is not noise — it is a small,
 reproducible, statistically robust improvement. Two consequences the aggregate null obscures:
 
-- **B2 beats B1 by roughly 2× (t = 7.72 vs 3.35).** Comparing the two prompting strategies was a
+- **B2 beats B1 by roughly 2× (t = 7.69 vs 3.20).** Comparing the two prompting strategies was a
   stated goal of this intervention, and it has a clear answer: asking for a one-sentence reason
   before the verdict produces a materially better ordering.
-- **The calibrated arm is significantly WORSE than random**, not merely equal to it. That is
-  stronger than "the correction removes the benefit," and it needs its own explanation.
+- **The calibrated arm lands below random**, but it is excluded from the interpretation that
+  follows — see [Why the calibrated arm is not used as evidence](#why-the-calibrated-arm-is-not-used-as-evidence).
 
-The selected-user activity column supplies one, and then complicates it. Mean training degree
-orders popularity (5.88) > LLM (3.1–3.4) > random (2.30) > calibrated (2.03), which tracks the
-t-values at both extremes: picking active users helps, and the PMI correction does not just remove
-that signal but **inverts** it — dividing by a user's own baseline rewards users whose baseline is
-easy to exceed, i.e. low-degree users, which are worse ALS anchors than a random draw.
+The selected-user activity column is suggestive. Mean training degree orders popularity (5.88) >
+LLM (3.1–3.4) > random (2.30), which tracks the t-values at the top: picking active users helps.
 
 **But `reasoning` selects LESS active users than `direct` (3.07 vs 3.39) while scoring twice as
 well.** Activity cannot explain that ordering, so B2's advantage over B1 is not a popularity
@@ -339,17 +377,25 @@ None of which changes the practical conclusion: the largest effect here, popular
 **+0.4%** of the baseline, and the best LLM arm's is **+0.1%**. Significance and relevance are
 separate questions, and this run answers them differently.
 
-Four observations with one explanation:
+Three observations, and one reading that fits two of them:
 
 1. The LLM's ordering **does** beat random — 0.000026 against exactly 0, roughly 6σ. Real.
-2. **Picking active users beats it.** popularity-N is highest.
-3. Raw `direct` overlaps popularity-N at **Jaccard 0.202** against a **0.075** chance floor.
-4. Subtracting each user's own baseline — which provably removes the "says yes to everything"
-   component — drops the LLM to **exactly** random, in every seed.
+2. **Picking active users beats it.** popularity-N is highest, by 4× the best LLM arm.
+3. Raw `direct` overlaps popularity-N at **Jaccard 0.202** against a **0.075** chance floor. In
+   selection terms that is 2.35 of 7 picks shared where chance gives 0.98 — a real tilt toward
+   popular users, and not much more: 4.65 of 7 are picks popularity would not have made.
 
-**The agreeableness the PMI correction stripped out was the signal.** Agreeable users are active
-users, and active users are better anchors for a cold item's factor. The LLM was doing popularity
-estimation in disguise, and worse than doing it directly.
+The tempting reading is that the LLM was doing popularity estimation in disguise — agreeable users
+are active users, and active users are better anchors for a cold item's factor. Observations 2 and
+3 fit it. **`reasoning` does not:** as above, it scores twice what `direct` does on *less* active
+users, and it overlaps popularity-N less as well (Jaccard 0.157 vs 0.202). If activity were the
+mechanism, the ordering would run the other way.
+
+What this run supports is narrower: **most of `direct`'s small advantage is consistent with its tilt
+toward active users, and popularity-N gets more of that same effect more cheaply.** Whether that is
+the whole story is not settled here. Settling it needs a degree-matched LLM arm — select 7 of an
+item's 50 candidates by LLM score while matching popularity-N's degree distribution — which is an
+offline operation over the stored pair scores and costs no GPU time.
 
 And the magnitude settles the practical question: **0.000026 against a CBHCF baseline of 0.0419 is
 0.06%.** Statistically unambiguous, practically irrelevant — which is why §8's differences vanish
@@ -359,7 +405,7 @@ small, in the hybrid and outside it alike.
 > **The defensible claim.** ColdLLM-style synthetic interactions, generated **zero-shot**, improve
 > cold-start retrieval over a random draw from the same content-filtered pool by a statistically
 > robust but practically negligible margin (+0.1%), and are outperformed by simply choosing the
-> most active candidate users (+0.4%). Most of the LLM's advantage is explained by user activity;
+> most active candidate users (+0.4%). Most of the LLM's advantage is consistent with user activity;
 > the exception is the reason-then-answer prompt, which beats the direct prompt while selecting
 > *less* active users, and so contributes something activity alone cannot account for.
 
