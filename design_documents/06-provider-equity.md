@@ -1,12 +1,22 @@
 # Who gets exposure, and how do we turn it on?
 
-> **Status: built, not yet run.** Steps 1–7 are complete: `equity_metrics.py` is rewritten,
+> **Status: built and run.** Steps 1–7 are complete: `equity_metrics.py` is rewritten,
 > `content.canonical_creator` gives it the model's own provider partition, `eval.py` carries the
 > `on_recs` hook, `steel_thread.ipynb` has Section 9c, and the results reach W&B, the persisted
 > pickle/JSON and the recap. Gated by `bench_28` (22 checks) and `bench_29` (46), both pure CPU.
-> **No equity number in this document has been produced by a real run.** The first 9c attempt
-> crashed on the CBHCF arm — see § 2, which that crash forced us to reverse — and it has not been
-> re-run since the fix.
+>
+> Section 9c ran clean on 2026-08-11 (`outputs/baseline_cf_20260811_103923`), over **86,791
+> providers** and the **12,382** `common_covered_users`, at `equity_metrics v1`. Six arms were
+> measured — ALS, Popularity, CBHCF, Intervention A, and Intervention B's `reasoning` and
+> `random` — plus the population-sensitivity pass, the seven-discount table, the seed-stability
+> diagnostic and `warmup_equity_mode_a.png`. The first 9c attempt crashed on the CBHCF arm; § 2
+> is the reversal that crash forced, and the run above is post-fix.
+>
+> Headline, log discount at `K=100` (levels are a fact about the catalogue; read the between-arm
+> deltas): Gini at `k=20` is ALS 0.9950, Popularity 0.9994, CBHCF 0.8785, Intervention A 0.8641,
+> both Intervention B arms 0.8785. Across-seed Gini sd is 0.00003–0.00005, so **Intervention A's
+> 0.014 reduction sits far outside the seed band and Intervention B's exposure is
+> indistinguishable from CBHCF's** — see § Open questions 3, which this run answers.
 >
 > This document was originally an *integration spec* listing three blockers and four open
 > questions. All seven are resolved and recorded below, along with the four defects (§ D1–D5) the
@@ -173,9 +183,17 @@ most of the work.
 
 - the eval users are exactly those holding a held-out *cold* interaction, so they over-represent
   cold-affine taste and will flatter cold-item providers;
-- the set is thin — ~137k providers against 12,382 x K impressions is ~9 each, so absolute Gini
-  partly measures small-sample zeros. (This was the argument FOR the full population; it now
-  applies to what is actually being reported.)
+- the set is thin — the measured 86,791 providers against 12,382 x K impressions is ~14 each, so
+  absolute Gini partly measures small-sample zeros. (This was the argument FOR the full
+  population; it now applies to what is actually being reported.)
+
+The run bears the first point out. The population-sensitivity table shows ALS's cold exposure
+share falling 4.6% relative when scored over all 384,339 users instead of the 12,382, in the
+predicted direction: the eval users hold a held-out *cold* interaction, so they are cold-affine
+and inflate cold exposure. Gini itself moves by 0.00016 — but it sits at 0.86–0.999, hard against
+its own ceiling, so that agreement is mostly saturation and is weak evidence. **Between-arm
+differences are valid and absolute Gini is safe to quote; absolute cold exposure share must be
+quoted as an eval-user figure carrying that bias.**
 
 ALS and Popularity *can* be scored both ways, so Section 9c reports a **population sensitivity**
 table at k=0 and k=20. Popularity is the control, not a second data point: its ranking is
@@ -383,11 +401,14 @@ until `eval.py`'s `k` is renamed too. Keep them in step; the rewrite carries the
 | 3 | **Done.** `on_recs(ki, si, rec)` in `eval.sweep_mode_a_cached`, with its own timing bucket. Every existing caller passes the first three arguments positionally and the rest by keyword, so the trailing parameter is backwards-compatible. |
 | 4 | **Done.** `sweep_provider_equity_full` (own warm cache, whole population, D5 clear per seed) + `ceiling_equity` via `fold_in_ceiling`. Both reuse `fold_in`'s memo, so running in the same session as Section 9's sweep makes the fold-ins free. |
 | 5 | **Done.** `bench_29_provider_equity.py` — 46 checks, pure CPU: equity primitives, D1/D2/D4 regressions, hook mechanics, cached-vs-generic parity, D5, the ceiling, and the no-warm-cache guard. |
-| 6 | **Done (written, not yet run).** Notebook Section 9c — provider map + the `UNKNOWN` assert, the full-population pass per arm plus its ceiling, the readout, the discount-sensitivity table, the seed-stability diagnostic, and `warmup_equity_mode_a.png`. Popularity and Intervention B are behind flags (`RUN_POP_EQUITY` defaults False — the generic path's cost at 384k users is unmeasured). |
+| 6 | **Done and run.** Notebook Section 9c — provider map + the `UNKNOWN` assert, an eval-user pass per arm plus its ceiling (§ 2, not the full-population pass this row originally described), the readout, the discount-sensitivity table, the seed-stability diagnostic, and `warmup_equity_mode_a.png`. Popularity and Intervention B are behind flags; both were **on** for the recorded run (`RUN_POP_EQUITY = True` now that the generic path's cost is measured, `RUN_IB_EQUITY = RUN_IB`). Intervention B's arms borrow CBHCF's ceiling rather than recomputing it — the synthetic wrapper overrides the reveal path only, so at the ceiling every cold item folds in from real history and the two are identical by construction. |
 | 7 | **Done.** W&B `equity/*` against step `k` on each arm's run (plus ceiling and per-discount Gini as summaries), `results["mode_a"]["equity"]` with `EQUITY_METRICS_VERSION` in the config block, a RESULTS RECAP section, Section 12 prose, and this doc. `pop_run.finish()` moved from Section 9 to 9c so Popularity's equity arm is logged before its run closes. No README change needed — `books_meta_5core_common.parquet` was already in the data table; the 0-core file the original spec asked for is not used. |
 
-**Cost:** ~10–20 min GPU across four arms, ~7 min counting. The eval-user pass, the extra
-discount schemes, the extra `K` values and the merit baselines are all free.
+**Cost, as estimated:** ~10–20 min GPU across four arms, ~7 min counting. **Measured on the
+2026-08-11 run:** 3 min 52 s for the four sweep-plus-ceiling arms over 12,382 users (26–37 s per
+`sweep_provider_equity_full`, 2.6–4.6 s per `ceiling_equity`), plus 58 s for the full-population
+sensitivity pass. The extra discount schemes, the extra `K` values and the merit baselines are
+free, as predicted.
 
 **Ordering constraint:** `pop_run.finish()` fires at the end of notebook cell 23. Either the
 Popularity equity arm logs inside Section 9, or that `finish()` moves to 9c.
@@ -411,8 +432,10 @@ nonexistent `score_matrix` protocol method, and the module docstring citing
 
 ## Open questions
 
-Resolved since the original spec: Books-only (§ D1); full population, with the eval-user subset
-available as a free robustness check (§ 2); a ceiling reference via `ceiling_equity` (Step 4);
+Resolved since the original spec: Books-only (§ D1); the eval-user population, with the full
+population available as a free robustness check on the two arms that can be scored both ways
+(§ 2 — note this is the reverse of what this line said before the first run); a ceiling
+reference via `ceiling_equity` (Step 4);
 `nanmean` plus six summaries replacing the bare mean (§ 5); and the Popularity floor's cost, which
 was the previous question 1 — **measured**, not assumed: `PopularityModel.recommend` is vectorized
 over a global top-M, so a full-population level costs 2.3 s at max user degree ~500 and 13.4 s at
@@ -424,11 +447,23 @@ What remains genuinely open:
 
 1. **RBP `p`.** Defaulted to 0.90 with a {0.80, 0.95} sensitivity band. There is no
    Books-specific evidence for any value; the band is the honest representation of that.
-2. **Merit sparsity.** With 13,635 cold held-out interactions across 136,602 providers, merit
-   share is a noisy estimate for every provider near the threshold. Whether the merit ratio
-   survives that noise well enough to report as more than a directional check is an empirical
-   question the first run will answer.
-3. **Whether the equity numbers are worth reporting at all.** Nothing here has run yet. If the
-   between-arm differences are inside the across-seed band, the honest conclusion is that the
-   interventions do not measurably change provider exposure — which is a finding, and should be
-   reported as one rather than quietly dropped.
+2. **Merit sparsity.** With 13,635 cold held-out interactions across the provider universe, merit
+   share is a noisy estimate for every provider near the threshold. The run confirms the ratio is
+   *available* — scored users equal the merit population, so `ExposureAccumulator` returns it
+   rather than NaN — but it is absent from the Section 9c readout, so whether it survives that
+   noise well enough to report as more than a directional check is **still open**. It needs a
+   dispersion readout (`ratio_stats`' p10–p90 and fraction-below-1) before anyone quotes it.
+3. **Whether the equity numbers are worth reporting at all. Answered: yes.** The between-arm
+   differences are far outside the across-seed band — Gini sd across the 10 ALS fits is
+   0.00003–0.00005, against Intervention A's 0.014 reduction versus CBHCF. Two findings fall out,
+   and the second is a null that should be reported rather than dropped:
+   - **Intervention A measurably de-concentrates exposure.** Gini 0.8641 vs CBHCF's 0.8785, top-1%
+     share 0.494 vs 0.560, cold equity ratio 3.86 vs 2.18 at `k=20`. It also holds *less* absolute
+     cold exposure share (0.0206 vs 0.0250), so it spreads a smaller cold slice more evenly — the
+     two move in opposite directions and the writeup has to say both.
+   - **Intervention B does not change provider exposure at all.** Its `reasoning` and `random` arms
+     agree with CBHCF and with each other to four decimals on every column. Consistent with the
+     accuracy result: 19,089 synthetic interactions against `ref_train`'s 2.67M cannot move an
+     exposure distribution.
+   The direction of the accuracy/equity trade is the interesting part: Intervention A loses NDCG@100
+   and gains equity, which is a genuine trade-off to state, not a wash.

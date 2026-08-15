@@ -83,7 +83,9 @@ flowchart TD
 
     CB --> SWEEP["sweep_mode_a_cached<br/>via SyntheticAugmentedDataset"]
     ALSONLY --> SWEEP
+    CB --> SWEEPB["sweep_item_to_user_gpu<br/>same wrapper, Mode B<br/>steel_thread only"]
     SWEEP --> RES["each arm vs ITS control"]
+    SWEEPB --> RES
 ```
 
 ## Node reference
@@ -104,6 +106,35 @@ flowchart TD
 | `revealed_item_users_at_k` override | [coldllm.py:1015](../recsys/coldllm.py:1015) | The **only** method overridden — see [Keeping synthetic data out of the exclusion set](#keeping-synthetic-data-out-of-the-exclusion-set). |
 | `wrap_seeds` / `build_content_cache` | [cbhcf.py:452](../recsys/cbhcf.py:452), [cbhcf.py:169](../recsys/cbhcf.py:169) | The content half depends on neither seed nor arm, so one block is built and every model borrows it by reference. |
 | `sweep_mode_a_cached` | [eval.py:261](../recsys/eval.py:261) | The same warm-up sweep `steel_thread.ipynb` uses, run against `SyntheticAugmentedDataset`. |
+| `sweep_item_to_user_gpu` | [eval.py:525](../recsys/eval.py:525) | The Mode B dual, added to `steel_thread.ipynb` Section 10 — see [Mode B](#mode-b) below. This notebook stays Mode A only: it exists to *generate and select* the synthetic interactions, and the steel thread is where every arm is reported on a common basis. |
+
+## Mode B
+
+`steel_thread.ipynb` Section 10 sweeps every arm in Mode B as well, through the same wrapper with
+nothing added to this module. `sweep_item_to_user_gpu` reaches the dataset only through methods
+`SyntheticAugmentedDataset` either overrides (`revealed_item_users_at_k`) or delegates, and CBHCF's
+`mode_b_source()` reads the folded cold-item factors — which is exactly where the synthetic
+interactions enter. Swept per seed, like Mode A, because the random control draws per seed.
+
+Two properties are worth stating rather than leaving to be rediscovered:
+
+- **The exclusion set is the real revealed history, not the augmented one.** This sweep builds its
+  per-item "already seen" mask from `revealed_matrix_at_k`, which the wrapper deliberately does not
+  override, so a synthetic user stays eligible to be returned in the top-K. That is the correct
+  behaviour and the same reasoning as Mode A: the pair was selected from content similarity and an
+  LLM verdict with no sight of `test_matrix`, so a synthetic user who is also a test positive is a
+  prediction, not leakage. Excluding them would delete candidates from the axis being ranked.
+- **Every arm shares CBHCF's Mode B ceiling, by construction.** `ceiling_item_users` is not
+  overridden, so `mode_b_reference` folds each cold item in from its real pre-test history whatever
+  the arm. The steel thread borrows `cbhcf_b_ref` rather than spending ten fold-ins to recompute an
+  identical number, and records the reason alongside it — the same treatment 9c gives the equity
+  ceiling.
+
+Mode B may be the more sensitive of the two views here. At `k=0` an unaugmented cold item's factor
+is the exact zero vector, so every user scores identically and the collaborative ranking is
+degenerate ties; synthetic interactions are the only thing that can produce a user ordering at that
+point. Everything in [What the run found](#what-the-run-found) is Mode A, measured by this
+notebook; the Mode B curves are reported by the steel thread.
 
 ## Reading the score
 

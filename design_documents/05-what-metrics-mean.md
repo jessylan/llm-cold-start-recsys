@@ -155,21 +155,13 @@ is the ALS initialization spread. Deterministic models (Popularity, Activity) re
 
 Places where prose contradicts the code. Reported, not fixed.
 
-Both open items belong to `recsys/equity_metrics.py` and are tracked against its
-integration, not against the evaluation harness. [06](06-provider-equity.md#drift) carries
-them in full alongside a third.
-
-1. **`equity_metrics.load_provider_metadata` cites `data_cleaning.ipynb`**
-   ([equity_metrics.py:28](../recsys/equity_metrics.py:28)) — a notebook deleted in
-   `f61dfca`. Marked `<-- NOTE - deprecated. To be updated in a future commit.` in the
-   source. Not merely a stale reference: the `book_`/`movie_` id convention it describes is
-   the blocker documented in [06](06-provider-equity.md).
-2. **`equity_metrics._check_model` names a method that does not exist in the protocol.**
-   Its error message ([equity_metrics.py:124](../recsys/equity_metrics.py:124)) says the
-   model "needs fit, recommend, score_matrix, and fold_in". `protocol.RetrievalModel`
-   declares only `fit`, `recommend`, `fold_in`, and
-   [eval.py:475-476](../recsys/eval.py:475) records that the dense `score_matrix()` path was
-   removed. `eval._check_model` ([eval.py:30](../recsys/eval.py:30)) has the correct text.
+**None outstanding.** The two items this section carried both belonged to
+`recsys/equity_metrics.py` and were tracked against its integration rather than against the
+evaluation harness: `load_provider_metadata`'s citation of the deleted `data_cleaning.ipynb`
+(and the `book_`/`movie_` id convention it described), and `_check_model`'s reference to a
+`score_matrix` method the protocol does not declare. Both were **fixed** by the Step 2 rewrite
+rather than merely reported — neither string survives in the module. See
+[06](06-provider-equity.md#drift), which is likewise empty.
 
 ## Open questions
 

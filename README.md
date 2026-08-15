@@ -74,7 +74,7 @@ Dataset  (interaction matrix + warm / cold-val / cold-test splits, built in memo
 |   |-- 03-adding-a-model.md            # the RetrievalModel contract and its implementors
 |   |-- 04-cbhcf-score-composition.md   # ALS + content -> AdditiveItemBlock; where lambda comes from
 |   |-- 05-what-metrics-mean.md         # Mode A/B control flow, ceilings, floors, pools
-|   |-- 06-provider-equity.md           # equity_metrics.py as an integration spec (not yet wired in)
+|   |-- 06-provider-equity.md           # equity_metrics.py: provider exposure, wired into Section 9c and run
 |   |-- 07-intervention-a-embeddings.md # sentence embeddings in place of TF-IDF prose
 |   |-- 08-intervention-b-coldllm.md    # LLM-simulated interactions for cold items
 |   `-- initial_pipeline_design/        # RETIRED MovieLens steel thread; design record only
@@ -161,8 +161,10 @@ can be checked against the code rather than trusted. Start at
 
 Docs 05 and 06 each end with a **Drift** section (places where prose contradicts the code,
 reported but not fixed) and an **Open questions** section (things not determinable from
-source). Read `06` before touching `recsys/equity_metrics.py` — it documents a blocking
-id-format mismatch that fails silently.
+source). Read `06` before touching `recsys/equity_metrics.py` — it records why the module is
+measured over the eval-user set rather than the full population, which is not obvious from the
+code and is what a naive widening would break. Its Drift section is now empty: the id-format
+mismatch it used to document was fixed rather than merely reported.
 
 ### initial_pipeline_design
 This folder contains:
