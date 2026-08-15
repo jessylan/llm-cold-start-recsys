@@ -16,13 +16,17 @@
 > deltas): Gini at `k=20` is ALS 0.9950, Popularity 0.9994, CBHCF 0.8785, Intervention A 0.8641,
 > both Intervention B arms 0.8785. Across-seed Gini sd is 0.00003–0.00005, so **Intervention A's
 > 0.014 reduction sits far outside the seed band and Intervention B's exposure is
-> indistinguishable from CBHCF's** — see § Open questions 3, which this run answers.
+> indistinguishable from CBHCF's** — see [What the run showed](#what-the-run-showed).
 >
 > This document was originally an *integration spec* listing three blockers and four open
 > questions. All seven are resolved and recorded below, along with the four defects (§ D1–D5) the
 > rewrite fixed — every one of which returned a plausible wrong answer rather than raising, which
 > is why they survived. It is kept as the reasoning behind each choice, so a reviewer can argue
 > with a decision rather than reverse-engineer it.
+
+**`bench_*` scripts cited below are not in the repo, on purpose** — development-time GPU
+verification, not part of the shipped pipeline. See
+[05 § Design decisions on record](05-what-metrics-mean.md#design-decisions-on-record).
 
 `eval.py` asks an item-side question: *did the cold item become retrievable?*
 `equity_metrics.py` asks the provider-side companion: *whose items are actually getting
@@ -97,7 +101,7 @@ results, since data fingerprints cannot see a change to what a metric means).
 | `ratio_stats` | `equity_metrics.py` | The six summaries that replace the single unweighted mean at [equity_metrics.py:151](../recsys/equity_metrics.py:151). |
 | `merit_shares` | `equity_metrics.py` | Provider merit from held-out relevance, `bincount` over `dataset.test_matrix`. |
 | `sweep_provider_equity_full` | `equity_metrics.py` | Builds its own warm cache via [cf.py:188](../recsys/cf.py:188) over whatever `users` it is given, and preflights coverage before doing any work. |
-| `ceiling_equity` | `equity_metrics.py` | `fold_in_ceiling` analog of [eval.ceiling_reference](../recsys/eval.py:107) — resolves old open question 3. |
+| `ceiling_equity` | `equity_metrics.py` | `fold_in_ceiling` analog of [eval.ceiling_reference](../recsys/eval.py:107) — resolves the original spec's ceiling-reference question (§ Open questions → Resolved). |
 | `on_recs` hook | [eval.py:315](../recsys/eval.py:315) | Hands the already-computed `rec` to a callback before it is reduced to metrics, so a second measurement over the same lists costs no retrieval. `eval.py` learns nothing about providers. Omitted from the timing line when unused, so a sweep without it prints exactly what it always did. |
 | `evaluate_provider_equity_at_k` / `sweep_provider_equity` | [equity_metrics.py:128](../recsys/equity_metrics.py:128), [:156](../recsys/equity_metrics.py:156) | Kept as the generic protocol-only path: needed for the Popularity floor, which has no warm cache, and as the reference implementation `bench_28` checks the fast path against. |
 
@@ -422,6 +426,25 @@ Popularity equity arm logs inside Section 9, or that `finish()` moves to 9c.
 - **Stochastic ranking policies** — see above.
 - **Movies, a combined item table, and therefore prefixed item ids.**
 
+## What the run showed
+
+Section 9c, 2026-08-11, six arms. The between-arm differences are far outside the across-seed
+band — Gini sd across the 10 ALS fits is 0.00003–0.00005, against Intervention A's 0.014
+reduction versus CBHCF — so these are differences worth reporting, not noise.
+
+**Intervention A measurably de-concentrates exposure.** Gini 0.8641 vs CBHCF's 0.8785, top-1%
+share 0.494 vs 0.560, cold equity ratio 3.86 vs 2.18 at `k=20`. It also holds *less* absolute
+cold exposure share (0.0206 vs 0.0250), so it spreads a smaller cold slice more evenly. The two
+move in opposite directions and the writeup has to say both.
+
+**Intervention B does not change provider exposure at all** — a null that should be reported
+rather than dropped. Its `reasoning` and `random` arms agree with CBHCF and with each other to
+four decimals on every column. That is consistent with the accuracy result: 19,089 synthetic
+interactions against `ref_train`'s 2.67M cannot move an exposure distribution.
+
+**The direction of the trade is the interesting part.** Intervention A loses NDCG@100 and gains
+equity. That is a genuine trade-off to state, not a wash.
+
 ## Drift
 
 None outstanding. The three items previously listed here were fixed by the Step 2 rewrite rather
@@ -432,18 +455,23 @@ nonexistent `score_matrix` protocol method, and the module docstring citing
 
 ## Open questions
 
-Resolved since the original spec: Books-only (§ D1); the eval-user population, with the full
-population available as a free robustness check on the two arms that can be scored both ways
-(§ 2 — note this is the reverse of what this line said before the first run); a ceiling
-reference via `ceiling_equity` (Step 4);
-`nanmean` plus six summaries replacing the bare mean (§ 5); and the Popularity floor's cost, which
-was the previous question 1 — **measured**, not assumed: `PopularityModel.recommend` is vectorized
-over a global top-M, so a full-population level costs 2.3 s at max user degree ~500 and 13.4 s at
-~5,000, i.e. 0.8–4.7 min for 21 levels. It is on by default; it is also the most interpretable
-comparator here, since Popularity serves every user the same list and its Gini is therefore the
-concentration ceiling.
+### Resolved since the original spec
 
-What remains genuinely open:
+- **Scope** — Books only (§ D1).
+- **Population** — the eval users, with the full population kept as a free robustness check on
+  the two arms that can be scored both ways (§ 2). This is the *reverse* of what this line said
+  before the first run.
+- **Ceiling reference** — `ceiling_equity` (Step 4).
+- **Aggregation** — `nanmean` plus six summaries, replacing the bare mean (§ 5).
+- **The Popularity floor's cost** — measured, not assumed. `PopularityModel.recommend` is
+  vectorized over a global top-M, so a full-population level costs 2.3 s at max user degree ~500
+  and 13.4 s at ~5,000: 0.8–4.7 min for 21 levels. On by default, and the most interpretable
+  comparator here — Popularity serves every user the same list, so its Gini is the concentration
+  ceiling.
+- **Whether the equity numbers are worth reporting at all** — yes, and by a wide margin. See
+  [What the run showed](#what-the-run-showed).
+
+### What remains genuinely open
 
 1. **RBP `p`.** Defaulted to 0.90 with a {0.80, 0.95} sensitivity band. There is no
    Books-specific evidence for any value; the band is the honest representation of that.
@@ -453,17 +481,3 @@ What remains genuinely open:
    rather than NaN — but it is absent from the Section 9c readout, so whether it survives that
    noise well enough to report as more than a directional check is **still open**. It needs a
    dispersion readout (`ratio_stats`' p10–p90 and fraction-below-1) before anyone quotes it.
-3. **Whether the equity numbers are worth reporting at all. Answered: yes.** The between-arm
-   differences are far outside the across-seed band — Gini sd across the 10 ALS fits is
-   0.00003–0.00005, against Intervention A's 0.014 reduction versus CBHCF. Two findings fall out,
-   and the second is a null that should be reported rather than dropped:
-   - **Intervention A measurably de-concentrates exposure.** Gini 0.8641 vs CBHCF's 0.8785, top-1%
-     share 0.494 vs 0.560, cold equity ratio 3.86 vs 2.18 at `k=20`. It also holds *less* absolute
-     cold exposure share (0.0206 vs 0.0250), so it spreads a smaller cold slice more evenly — the
-     two move in opposite directions and the writeup has to say both.
-   - **Intervention B does not change provider exposure at all.** Its `reasoning` and `random` arms
-     agree with CBHCF and with each other to four decimals on every column. Consistent with the
-     accuracy result: 19,089 synthetic interactions against `ref_train`'s 2.67M cannot move an
-     exposure distribution.
-   The direction of the accuracy/equity trade is the interesting part: Intervention A loses NDCG@100
-   and gains equity, which is a genuine trade-off to state, not a wash.

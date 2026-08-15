@@ -45,6 +45,11 @@ Amazon-Books scale (487,790 items) and comparable across methods.
   defaults in [load.py:163](../recsys/load.py:163) and
   [load.py:378](../recsys/load.py:378) are repo-root-relative and will not resolve from a
   notebook. Every notebook passes its path explicitly; do the same.
+- **`bench_*` citations point at files that are not in the repo, and that is deliberate.**
+  They are development-time verification scripts run against a local GPU environment, not part
+  of the shipped pipeline, and were left out of the upload on purpose. A citation records what
+  was checked, not a broken path. See
+  [05](05-what-metrics-mean.md#design-decisions-on-record).
 - **`design_documents/initial_pipeline_design/` is a retired design record** describing the
   original MovieLens steel thread. It is not documentation of the current system.
   `notebooks/steel_thread.ipynb` — despite sharing the name — *is* the current baseline
