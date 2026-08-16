@@ -179,12 +179,18 @@ A 21x floor-to-CBHCF spread against a seed std of 0.0005. The saturation risk th
 a small K on a 943-user population did not reappear as its opposite — a floor-crushed metric
 — at 384k users. K=10 discriminates, and the open action is resolved.
 
-What K=10 does *not* separate is the content arms from one another: CBHCF, Intervention A,
-and Intervention B fall within roughly 1.5 seed-sigma of each other on Mode B top-K. That is
-not a cutoff artifact — Mode A at K=100 shows the same compression, with Intervention B's
-reasoning and random arms identical to four decimal places — so it is a property of those
-arms, not of `K`. Choosing a different `K` will not surface a difference that Mode A at 10x
-the depth also cannot find.
+What K=10 does *not* separate is CBHCF from Intervention B: 0.0779 against 0.0783
+(reasoning) and 0.0781 (random), all within about one seed-sigma. That is not a cutoff
+artifact — Mode A at K=100 shows the same compression, with Intervention B's reasoning and
+random arms agreeing to within 5e-5 on NDCG@100 at `k = 0` (0.04206 vs 0.04201) — so it is
+a property of those arms, not of `K`. Choosing a different `K` will not surface a difference
+that Mode A at 10x the depth also cannot find.
+
+**Intervention A is not part of that group.** It reaches HitRate@10 = 0.0729 at `k = 20`,
+0.0050 below CBHCF — roughly 10 seed-sigma, and separated at `k = 0` as well (0.0686 vs
+0.0715). Mode A separates it in the same direction and more sharply (HitRate@100 at `k = 0`:
+0.1220 vs CBHCF's 0.1490, −18.1%). So the compression above is specific to the CBHCF /
+Intervention B pair; do not read it as "all content arms are indistinguishable."
 
 ## Curve shape
 
