@@ -1,3 +1,4 @@
+# This file was created with the assistance of Generative AI.
 """Score sources -- the one thing `gpu_retrieval` needs from a retrieval method.
 
 Every sweep in this project reduces to "give me a block of scores and I'll rank it". Until now that

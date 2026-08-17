@@ -1,3 +1,5 @@
+<!-- This file was created with the assistance of Generative AI -->
+
 # How do I add a new model?
 
 Satisfy three methods — `fit`, `recommend`, `fold_in` — and `eval.py` will sweep your model

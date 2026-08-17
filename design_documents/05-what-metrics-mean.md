@@ -1,3 +1,5 @@
+<!-- This file was created with the assistance of Generative AI -->
+
 # What does this accuracy number mean?
 
 Before reading a number off a curve, you need three facts about it: **which mode** produced

@@ -1,3 +1,4 @@
+# This file was created with the assistance of Generative AI.
 """ALS/CF wrapper around implicit's AlternatingLeastSquares.
 
 Alternating Least Squares learns latent user and item factor vectors by alternately solving,

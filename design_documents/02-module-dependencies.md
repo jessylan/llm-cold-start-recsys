@@ -1,3 +1,5 @@
+<!-- This file was created with the assistance of Generative AI -->
+
 # What breaks if I edit this file?
 
 Thirteen modules, and the import graph is deliberately shallow: **seven of the thirteen are

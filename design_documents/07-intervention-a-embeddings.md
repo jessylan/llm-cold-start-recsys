@@ -1,3 +1,5 @@
+<!-- This file was created with the assistance of Generative AI -->
+
 # How does Intervention A replace TF-IDF with sentence embeddings?
 
 By swapping **one block** of the item representation and holding everything else fixed. Intervention

@@ -1,3 +1,4 @@
+# This file was created with the assistance of Generative AI.
 """Load Amazon Books (the 5-core interaction set, restricted to common users -- see
 data_filtering.ipynb's "Build the 5-core enriched dataset" section), build the sparse user x item
 interaction matrix, and construct the cold/warm split used throughout the rest of the pipeline.

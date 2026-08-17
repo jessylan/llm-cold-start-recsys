@@ -1,3 +1,4 @@
+<!-- This file was created with the assistance of Generative AI -->
 # LLM Cold-Start Recommender
 
 University of Michigan MADS Capstone project for Team Cold Start. The project explores

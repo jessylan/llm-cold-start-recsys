@@ -21,6 +21,8 @@
 # and the GPU is used only for retrieval -- but the interventions are not optional
 # extras with a CPU fallback: encoding a 487,790-item catalogue and running vLLM
 # are GPU jobs. One file, one environment.
+# 
+# Note - this file was created with the assistance of Generative AI.
 # =============================================================================
 
 # --- Core recommender stack --------------------------------------------------

@@ -1,3 +1,4 @@
+# This file was created with the assistance of Generative AI.
 """Content-based hybrid collaborative filtering (CBHCF).
 
 Adds a content score to an already-fit collaborative model's score:

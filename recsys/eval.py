@@ -1,3 +1,4 @@
+# This file was created with the assistance of Generative AI.
 """Model-agnostic evaluation: the metric functions, the warm-item reference score, and the two
 cold-start "warm-up curve" sweeps (Mode A -- does the item surface in a user's personal top-K;
 Mode B -- does the item's ranking surface the users who actually want it).

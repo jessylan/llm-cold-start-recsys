@@ -1,3 +1,4 @@
+# This file was created with the assistance of Generative AI.
 """Intervention B: ColdLLM-style synthetic interaction generation for strict cold-start items
 (arXiv:2402.09176). A two-stage funnel -- Filtering Simulation narrows every cold item's
 candidate pool from all users down to the top-K most content-similar, then Refining Simulation

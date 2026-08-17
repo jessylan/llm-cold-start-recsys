@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# This file was created with the assistance of Generative AI.
 """Generate `solution_architecture_generated.html` -- the CF retrieval-stage steel thread's
 reference architecture diagram, built from structured Python data via diagram_lib rather
 than hand-edited HTML.

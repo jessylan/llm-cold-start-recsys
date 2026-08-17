@@ -1,3 +1,5 @@
+<!-- This file was created with the assistance of Generative AI -->
+
 # How does CBHCF combine ALS and content?
 
 One line of arithmetic, applied per candidate block:

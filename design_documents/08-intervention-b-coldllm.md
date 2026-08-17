@@ -1,3 +1,5 @@
+<!-- This file was created with the assistance of Generative AI -->
+
 # How does Intervention B generate synthetic interactions for cold items?
 
 A two-stage funnel, following ColdLLM ([arXiv:2402.09176](https://arxiv.org/abs/2402.09176)):

@@ -1,3 +1,5 @@
+<!-- This file was created with the assistance of Generative AI -->
+
 # Who gets exposure, and how do we turn it on?
 
 > **Status: built and run.** Steps 1–7 are complete: `equity_metrics.py` is rewritten,

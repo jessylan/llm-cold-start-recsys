@@ -1,3 +1,4 @@
+# This file was created with the assistance of Generative AI.
 """Item content representation, shared by every content-aware retrieval method.
 
 This module owns exactly one job: turn a dataset's raw item metadata into a sparse item x term

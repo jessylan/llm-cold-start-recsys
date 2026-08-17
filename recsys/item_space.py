@@ -1,3 +1,4 @@
+# This file was created with the assistance of Generative AI.
 """How an item's content vector is stored, and how a content score is computed from it.
 
 `content.py` produces ONE shape of item representation: a sparse item x term matrix with
