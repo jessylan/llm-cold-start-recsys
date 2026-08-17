@@ -10,6 +10,8 @@ outputs/*
 !outputs/.gitkeep
 !outputs/hyperparams.json
 !outputs/intervention_a_*.json
+!outputs/figure_curves.json
+!outputs/baseline_cf_*.json
 
 # Raw data (large files, keep the folders)
 data/raw/movies/*
