@@ -1,3 +1,4 @@
+# This file was created with the assistance of Generative AI.
 """
 Reusable architecture-diagram builder: numbered pipeline stages that can be a plain
 sequence, a boxed/grouped sub-sequence (dependent sub-steps, e.g. "4.1"/"4.2"), or a

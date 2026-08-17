@@ -1,3 +1,4 @@
+# This file was created with the assistance of Generative AI.
 """Provider-side equity and exposure metrics: whose items actually get recommended, not just
 whether a cold item becomes retrievable. Companion to eval.py's warm-up curve (Mode A/B), this
 module asks whether exposure concentrates on already-well-represented providers ("rich get

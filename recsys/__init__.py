@@ -1,3 +1,4 @@
+# This file was created with the assistance of Generative AI.
 """recsys package init.
 
 Single-thread the BLAS pool as early as importing this package. implicit does its own

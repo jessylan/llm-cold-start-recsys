@@ -1,3 +1,4 @@
+# This file was created with the assistance of Generative AI.
 """Exact GPU top-K retrieval, as a drop-in for implicit's model.recommend().
 
 Why this exists: implicit's recommend() is CPU-only here, and its cost at Amazon-Books scale is

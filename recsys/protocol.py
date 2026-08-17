@@ -1,3 +1,4 @@
+# This file was created with the assistance of Generative AI.
 """Shared contract every retrieval model -- Popularity, ALS/CF, and future methods such as
 CBHCF or a content-embedding intervention -- must satisfy so eval.py never branches on model
 type.

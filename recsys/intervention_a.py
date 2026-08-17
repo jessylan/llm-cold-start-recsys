@@ -1,3 +1,4 @@
+# This file was created with the assistance of Generative AI.
 """Intervention A -- sentence embeddings in place of TF-IDF for the item's own descriptive prose.
 
 CBHCF's content term asks one question: which items are like which other items? The baseline answers

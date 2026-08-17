@@ -1,3 +1,4 @@
+# This file was created with the assistance of Generative AI.
 """The one definition of `outputs/hyperparams.json["steel_thread_config"]` -- both directions.
 
 That key is what `steel_thread.ipynb` and `intervention_b_coldllm.ipynb` actually run on: the

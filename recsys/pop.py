@@ -1,3 +1,4 @@
+# This file was created with the assistance of Generative AI.
 """Popularity baseline (item-side, Mode A) and its Mode-B dual, global user Activity. Neither
 has any per-user personalization signal -- both rank by raw observed interaction volume, on
 opposite axes of the same user x item matrix -- which is exactly why they're the right floor

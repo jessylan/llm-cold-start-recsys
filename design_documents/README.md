@@ -1,3 +1,5 @@
+<!-- This file was created with the assistance of Generative AI -->
+
 # `recsys/` documentation
 
 Eight diagrams, each named for the question it answers. Every node is a real symbol; every

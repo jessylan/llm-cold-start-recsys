@@ -1,3 +1,5 @@
+<!-- This file was created with the assistance of Generative AI -->
+
 # How do I get from zero to a running evaluation?
 
 Three notebooks, run in order, and two of the three are skippable. The **fast path** skips
