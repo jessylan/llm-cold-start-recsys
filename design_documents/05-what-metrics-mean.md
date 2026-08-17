@@ -66,9 +66,9 @@ flowchart TD
 
 | Node | Source | Purpose |
 |---|---|---|
-| `sweep` | [eval.py:240](../recsys/eval.py:240) | Generic Mode A sweep. Works for any `RetrievalModel`; averages across a list of independently-fit seeds at each `k`. Returns `(curve, n_eval_per_k)`. |
+| `sweep` | [eval.py:240](../recsys/eval.py:240) | Generic Mode A sweep. Works for any `RetrievalModel`; averages across a list of independently-fit seeds at each `k`. Returns `(curve, n_eval_per_k)`. **The Popularity path**, not a parity check for the cached sweep — see [Design decisions 1](#design-decisions-on-record). |
 | `evaluate_at_k` | [eval.py:214](../recsys/eval.py:214) | One reveal level: build `train_k`, fold, recommend, score. |
-| `sweep_mode_a_cached` | [eval.py:261](../recsys/eval.py:261) | The fast path the notebook actually runs. Produces the **identical** NDCG/Precision/Recall/HitRate curve as `sweep` — verified bit-for-bit — at ~L-fold less recommend work, L = number of k-levels. Requires `candidates='warm_cold'`. |
+| `sweep_mode_a_cached` | [eval.py:261](../recsys/eval.py:261) | The fast path every score-source model runs: ALS, CBHCF, Intervention A, Intervention B. Produces the **identical** NDCG/Precision/Recall/HitRate curve as `sweep` — verified bit-for-bit — at ~L-fold less recommend work, L = number of k-levels. Requires `candidates='warm_cold'`, which is why Popularity cannot use it. |
 | `mode_a_metrics_at_k` | [eval.py:38](../recsys/eval.py:38) | Macro-averaged NDCG/Precision/Recall/HitRate from a **single** `recommend()` call, restricted to users who actually have a held-out test item. Users with zero test items contribute nothing to a macro average, so skipping them is exact, not an approximation. |
 | `_mode_a_metrics_core` | [eval.py:77](../recsys/eval.py:77) | The metric math, factored out so a sweep can build the held-out structure `(rows, items, rel)` once from the fixed test set and reuse it across every `(seed, k)`. |
 | `mode_a_auc` | [gpu_retrieval.py:153](../recsys/gpu_retrieval.py:153) | Per-user Mann-Whitney rank-sum AUC over the candidate pool. **Average ranks** via two-sided `searchsorted`, so ties are handled correctly. |
@@ -141,6 +141,57 @@ exactly 0.5, and only average ranks produce it — ordinal `argsort` ranks would
 arbitrary value in `[0, 1]`. That is why both AUC kernels use two-sided `searchsorted`
 rather than a sort position, verified against `scipy.rankdata`.
 
+## Why `K` differs between the modes
+
+Mode A reports at `K = 100`, Mode B at `K_MODE_B = 10`. Both are set in
+`steel_thread.ipynb` and both have a rationale recorded there — in notebook markdown rather
+than in the modules, which is why neither is visible from `eval.py`.
+
+**Mode A, `K = 100`** — a retrieval-stage cutoff. A cold item competes against ~247k warm
+items, so a strict top-10 is hopeless; K=100 asks whether the item surfaced into the
+candidate pool at all. The question is recall-shaped, so the cutoff is deliberately loose.
+
+**Mode B, `K = 10`** — Mode B inverts the ranked axis: each cold item is ranked over the
+user population (384,339 users), not the item catalogue. The binding constraint is therefore
+*not* pool size but the positive count. The leave-last-5-out split fixes `r_i` at exactly 5
+for every cold item, so at K=10 the ceilings are `min(K, r_i)/K = 0.5` for Precision and
+`min(K, r_i)/r_i = 1.0` for Recall. At K=100 the Precision ceiling would collapse to 0.05.
+
+The two arguments cite the same fact — an enormous pool — and move K in opposite directions,
+because they ask different questions: *was this item retrieved anywhere* versus *are these
+the right users to show it to*.
+
+### Is `K = 10` still right at Amazon-Books scale?
+
+Yes. The notebook records that the value "was tuned on the earlier small-scale
+proof-of-concept" (the retired MovieLens steel thread, 943 users) and asks for it to be
+revisited once Mode B ran on GPU at full scale. That run exists —
+`outputs/baseline_cf_20260815_012902.json`, 10 seeds, 384,339 users, 2,727 cold items — and
+the value holds. Mode B HitRate@10 at `k = 20`:
+
+| arm | HitRate@10 | seed std |
+|---|---|---|
+| Activity floor | 0.0037 | 0.0000 |
+| ALS | 0.0192 | 0.0005 |
+| CBHCF | 0.0779 | 0.0005 |
+
+A 21x floor-to-CBHCF spread against a seed std of 0.0005. The saturation risk that motivated
+a small K on a 943-user population did not reappear as its opposite — a floor-crushed metric
+— at 384k users. K=10 discriminates, and the open action is resolved.
+
+What K=10 does *not* separate is CBHCF from Intervention B: 0.0779 against 0.0783
+(reasoning) and 0.0781 (random), all within about one seed-sigma. That is not a cutoff
+artifact — Mode A at K=100 shows the same compression, with Intervention B's reasoning and
+random arms agreeing to within 5e-5 on NDCG@100 at `k = 0` (0.04206 vs 0.04201) — so it is
+a property of those arms, not of `K`. Choosing a different `K` will not surface a difference
+that Mode A at 10x the depth also cannot find.
+
+**Intervention A is not part of that group.** It reaches HitRate@10 = 0.0729 at `k = 20`,
+0.0050 below CBHCF — roughly 10 seed-sigma, and separated at `k = 0` as well (0.0686 vs
+0.0715). Mode A separates it in the same direction and more sharply (HitRate@100 at `k = 0`:
+0.1220 vs CBHCF's 0.1490, −18.1%). So the compression above is specific to the CBHCF /
+Intervention B pair; do not read it as "all content arms are indistinguishable."
+
 ## Curve shape
 
 Every sweep returns `(curve, n_eval_per_k)` where
@@ -155,44 +206,54 @@ is the ALS initialization spread. Deterministic models (Popularity, Activity) re
 
 Places where prose contradicts the code. Reported, not fixed.
 
-Both open items belong to `recsys/equity_metrics.py` and are tracked against its
-integration, not against the evaluation harness. [06](06-provider-equity.md#drift) carries
-them in full alongside a third.
+**None outstanding.** All three items this section has carried were **fixed** rather than left
+reported. Two belonged to `recsys/equity_metrics.py` and were tracked against its integration
+rather than against the evaluation harness: `load_provider_metadata`'s citation of the deleted
+`data_cleaning.ipynb` (and the `book_`/`movie_` id convention it described), and `_check_model`'s
+reference to a `score_matrix` method the protocol does not declare. Both went in the Step 2
+rewrite — neither string survives in the module. The third was `steel_thread.ipynb`'s Mode B
+markdown, which still asked for `K_MODE_B` to be revisited once Mode B ran on GPU at full scale;
+that run settled it and the notebook prose was corrected to match
+[Is `K = 10` still right at Amazon-Books scale?](#is-k--10-still-right-at-amazon-books-scale).
+See [06](06-provider-equity.md#drift), which is likewise empty.
 
-1. **`equity_metrics.load_provider_metadata` cites `data_cleaning.ipynb`**
-   ([equity_metrics.py:28](../recsys/equity_metrics.py:28)) — a notebook deleted in
-   `f61dfca`. Marked `<-- NOTE - deprecated. To be updated in a future commit.` in the
-   source. Not merely a stale reference: the `book_`/`movie_` id convention it describes is
-   the blocker documented in [06](06-provider-equity.md).
-2. **`equity_metrics._check_model` names a method that does not exist in the protocol.**
-   Its error message ([equity_metrics.py:124](../recsys/equity_metrics.py:124)) says the
-   model "needs fit, recommend, score_matrix, and fold_in". `protocol.RetrievalModel`
-   declares only `fit`, `recommend`, `fold_in`, and
-   [eval.py:475-476](../recsys/eval.py:475) records that the dense `score_matrix()` path was
-   removed. `eval._check_model` ([eval.py:30](../recsys/eval.py:30)) has the correct text.
+## Design decisions on record
+
+Choices that look arbitrary or accidental from the source alone, and are not.
+
+1. **Both Mode A sweeps are live; they are not redundant.** `steel_thread.ipynb` calls
+   `ev.sweep` and `ev.sweep_mode_a_cached`, but for different models, not as a parity check.
+   `sweep_mode_a_cached` requires models prepared with `candidates='warm_cold'`
+   ([eval.py:267](../recsys/eval.py:267)), which `PopularityModel` is not — and Popularity's
+   AUC has to be filled separately by `pop_auc_curve` regardless. So `_pop_curve` takes
+   `ev.sweep` and every score-source model (ALS, CBHCF, Intervention A, Intervention B) takes
+   `sweep_mode_a_cached`. A run's stdout shows this directly: only `[sweep_mode_a_cached]`
+   timing lines appear, one per seed per arm.
+2. **The `bench_*` parity gates are deliberately not in the repo.** `bench_7`, `bench_8`,
+   `bench_8b`, `bench_9`, `bench_14`, `bench_15`, and `bench_16` are cited across
+   `gpu_retrieval.py`, `eval.py`, and `scores.py` as the correctness checks on the fast
+   paths. They exist and were run; they are development-time verification scripts against a
+   local GPU environment, not part of the shipped pipeline, and were left out of the upload
+   on purpose. A citation to one is a record of what was checked, not a broken path.
+3. **`METRICS` and `METRICS_MODE_B` are identical lists on purpose**
+   ([eval.py:19-20](../recsys/eval.py:19)), for two reasons. They are decoupled so either mode
+   can gain or drop a metric without editing the other — today's agreement is not a promise.
+   And the shared strings name different quantities: Mode B's `AUC` ranks over the full user
+   population rather than a degree-matched item pool, and its `Precision` carries a 0.5 ceiling
+   by construction. Identical members, non-identical semantics.
+4. **`auc_min_degree = 25` matching `min_interactions = 25` is intended coupling.** A warm
+   competitor should clear the same degree bar that made an item eligible to be a cold item, so
+   the AUC pool compares cold items against items of comparable standing rather than against the
+   whole long tail. **This intent is not enforced.** They are two independent literals in two
+   modules ([cf.py:130](../recsys/cf.py:130), [load.py:152](../recsys/load.py:152)) with no
+   comment linking them, so changing one silently redefines what the degree-matched pool means
+   without any error. Deriving one from the other is an open code change, tracked here because
+   the coupling is a property of the evaluation design rather than of either module.
 
 ## Open questions
 
 Things not determinable from the source.
 
-1. **Which sweep produced the committed numbers.** `steel_thread.ipynb` calls both
-   `ev.sweep` and `ev.sweep_mode_a_cached` (cell 20). The docstrings assert they agree
-   bit-for-bit, but the notebook's stored outputs do not make clear which one feeds the
-   reported figures, or whether `ev.sweep` is retained only as a parity check.
-2. **The `bench_*` parity gates are referenced but absent.** `bench_7`, `bench_8`,
-   `bench_8b`, `bench_9`, `bench_14`, `bench_15`, `bench_16` are cited across
-   `gpu_retrieval.py`, `eval.py`, and `scores.py` as the correctness checks on the fast
-   paths. No such files exist in the repo. Whether they live in a notebook, another branch,
-   or were removed is not determinable from source.
-3. **`METRICS` and `METRICS_MODE_B` are identical lists**
-   ([eval.py:19-20](../recsys/eval.py:19)). Whether the split is anticipating a future
-   divergence or is vestigial is not stated.
-4. **`auc_min_degree = 25` coincides with `min_interactions = 25`.** Both default to 25, in
-   different modules ([cf.py:130](../recsys/cf.py:130),
-   [load.py:152](../recsys/load.py:152)), with no comment linking them. Whether that is a
-   deliberate coupling or a coincidence is unclear — it matters, because changing one
-   without the other silently changes what the degree-matched pool means.
-5. **Mode B's `K = 10` versus Mode A's `K = 100`.** Set in the notebook
-   (`K_MODE_B = 10`, cell 25) with no recorded rationale. Since Precision@K in Mode B is
-   bounded by `min(K, r_i)/K` and `r_i` is fixed at `DOWNSAMPLE_SIZE = 5`, the Precision
-   ceiling is 0.5 by construction — presumably intentional, but not stated.
+**None outstanding.** The five questions this section carried have all been answered and moved:
+four to [Design decisions on record](#design-decisions-on-record) above, and the choice of `K`
+per mode to [Why `K` differs between the modes](#why-k-differs-between-the-modes).

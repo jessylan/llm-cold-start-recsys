@@ -35,16 +35,21 @@ flowchart TD
     LD --> DS(["load.Dataset<br/>ref_train / ref_val / ref_test<br/>+ cold test pop + cold_val pop"])
 
     DS --> NB2["notebooks/hyperparameter_tuning.ipynb<br/>SKIPPABLE - output is committed"]
-    NB2 -->|"17-point LAMBDA_GRID<br/>scored on dataset.cold_val"| HP["outputs/hyperparams.json<br/>cbhcf.content_weight = 2.0"]
+    NB2 -->|"11-point lambda grid<br/>scored on dataset.cold_val"| HP["outputs/hyperparams.json<br/>cbhcf.content_weight = 2.5"]
+
+    DS --> NBW["notebooks/intervention_a_weight_sweep.ipynb<br/>SKIPPABLE - output is committed"]
+    NBW -->|"matched-budget sweep,<br/>both arms on ONE grid"| HP
+
+    HP --> SC["recsys.steel_config.build<br/>steel_thread_config.cbhcf<br/>content_weight = 3.0<br/>NOT the cbhcf block's 2.5"]
 
     DS --> NB3["notebooks/steel_thread.ipynb<br/>the current baseline runner"]
-    HP -.->|"read at cell 11;<br/>missing =&gt; CBHCF_LAMBDA_FALLBACK = 1.0"| NB3
+    SC -.->|"steel_config.load at cell 11;<br/>missing =&gt; CBHCF_LAMBDA_FALLBACK = 1.0"| NB3
     F2 -->|"content.load_item_documents"| NB3
 
     NB3 --> OUT(["Sections 6-11:<br/>ceiling, warm-up curves Mode A + B,<br/>head/torso/tail, results JSON"])
 
     classDef skip fill:none,stroke-dasharray: 5 3
-    class NB1,NB2 skip
+    class NB1,NB2,NBW skip
 ```
 
 ## What each step actually does
@@ -57,8 +62,10 @@ flowchart TD
 | `books_meta_5core_common.parquet` | cell 26 | Item metadata for that item set. Feeds `content.load_item_documents` and `load.load_titles`. |
 | `load.load_dataset` | [load.py:150](../recsys/load.py:150) | The only external data dependency in the package. Reads the parquet, remaps raw ids to contiguous indices, selects the cold populations, builds the leave-last-out warm split. Prints a full diagnostic summary. |
 | `load.Dataset` | [load.py:35](../recsys/load.py:35) | What every model and every eval function consumes. See the field table below. |
-| `hyperparameter_tuning.ipynb` | [notebooks/hyperparameter_tuning.ipynb](../notebooks/hyperparameter_tuning.ipynb) | Selects CBHCF's lambda on `dataset.cold_val` — never on the reported test population. `LAMBDA_GRID` has 17 points, `K_LEVELS_TUNE = [0, 2, 5, 10, 20]`, `N_SEEDS_TUNE = 2`. |
-| `outputs/hyperparams.json` | cell 9, `json.dump(record, f, indent=2)` | Committed. Records the selected `content_weight`, the full objective-by-lambda trace, the ALS params, and a `dataset_fingerprint` so it cannot be silently reused against a different split. |
+| `hyperparameter_tuning.ipynb` | [notebooks/hyperparameter_tuning.ipynb](../notebooks/hyperparameter_tuning.ipynb) | Selects a CBHCF lambda on `dataset.cold_val` — never on the reported test population. 11-point grid, `K_LEVELS_TUNE = [0, 2, 5, 10, 20]`, `N_SEEDS_TUNE = 2`. Writes the `cbhcf` block (`content_weight = 2.5`). **This is not the lambda the steel thread runs** — see the next two rows. |
+| `intervention_a_weight_sweep.ipynb` | [notebooks/intervention_a_weight_sweep.ipynb](../notebooks/intervention_a_weight_sweep.ipynb) | Searches field weights *and* lambda for CBHCF and Intervention A on one shared grid, so neither arm enters the steel thread with a tuning advantage. Writes `intervention_a_weight_sweep.verified`. |
+| `outputs/hyperparams.json` | cell 9, `json.dump(record, f, indent=2)` | Committed. Holds several independently-written blocks, each with the full objective-by-lambda trace, the ALS params, and a `dataset_fingerprint` so it cannot be silently reused against a different split. |
+| `recsys.steel_config` | [steel_config.py](../recsys/steel_config.py) | Assembles `steel_thread_config` from the weight sweep's `verified` records — `content_weight = 3.0` for CBHCF — and is what `steel_thread.ipynb` and `intervention_b_coldllm.ipynb` read via `load()`. Reading `cbhcf.content_weight` out of the file and assuming it produced a published number is the mistake this split invites. |
 | `steel_thread.ipynb` | [notebooks/steel_thread.ipynb](../notebooks/steel_thread.ipynb) | 30 cells, Sections 0–12. Fits Popularity, ALS (`N_SEEDS = 10`), and CBHCF, then runs both warm-up sweeps and the ceilings. |
 
 ## The `Dataset` you get back

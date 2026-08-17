@@ -14,6 +14,10 @@ both. A raw CSR passed to `CBHCFModel.fit` is wrapped in `SparseItemSpace`, whos
 literally the lines `cbhcf.py` used to run inline, which is what keeps every pre-existing result
 reproducible.
 
+**`bench_*` scripts cited below are not in the repo, on purpose** — development-time GPU
+verification, not part of the shipped pipeline. See
+[05 § Design decisions on record](05-what-metrics-mean.md#design-decisions-on-record).
+
 **Not every field goes to the encoder, and that is the central design decision.** Measured over all
 487,790 Books items:
 
@@ -95,6 +99,24 @@ Setting it to the intuitive "1 + 1 = 2" would hand the dense block `4/5.5 = 72.7
 over-weighting prose by a quarter against the baseline, so part of any measured gain would be that
 reweighting rather than the representation. `bench_21` gates the share against the baseline's.
 
+### Two weights, both correct — read the label
+
+`DEFAULT_TEXT_WEIGHT` is `sqrt(2)`, the *parity* value derived above: it gives an untuned
+Intervention A exactly the baseline's 57.1% prose share, so a no-tuning comparison isolates the
+representation. `steel_thread.ipynb` runs at **2.0**, selected on `cold_val` by the matched-budget
+sweep and recorded in `hyperparams.json["steel_thread_config"]`. Anything that builds a space
+without passing `text_weight` gets the parity default. Both values are stated in the module —
+[intervention_a.py:49](../recsys/intervention_a.py:49) and
+[intervention_a.py:109](../recsys/intervention_a.py:109).
+
+**This is the convention, not an exception.** `content.DEFAULT_WEIGHTS` behaves the same way: it
+ships `reviews: 0.5` while the reported run uses `reviews: 1.0` — and Intervention A's
+`description_weight: 1.0` — each selected on `cold_val` and carried in through
+`hyperparams.json` → `recsys.steel_config`. Module defaults are untuned parity values by design;
+a tuned value that reaches a run always arrives from `hyperparams.json`. The mistake this split
+invites is reading a default out of a module and assuming it produced a published number. Check
+the run's own config block instead — every run persists one.
+
 ## The slate, and why five otherwise-good encoders are missing
 
 Every model in the slate has a context window of **at least 1,024 tokens**. The encoded document
@@ -159,29 +181,34 @@ ranking. For top-N cold-start retrieval — this project's framing — TF-IDF st
 
 ## Drift
 
-- The doc table in the repo `README.md` describes these docs as "seven Mermaid diagrams". With this
-  file and `08-intervention-b-coldllm.md` there are now eight.
-
-**Two weights, both correct — read the label.** `DEFAULT_TEXT_WEIGHT` is `sqrt(2)`, the *parity*
-value that gives an untuned Intervention A exactly the baseline's 57.1% prose share, so a no-tuning
-comparison isolates the representation. `steel_thread.ipynb` runs at **2.0**, selected on
-`cold_val` by the matched-budget sweep and recorded in `hyperparams.json["steel_thread_config"]`.
-Anything that builds a space without passing `text_weight` gets the parity default. This was
-previously a genuine drift (the docstring documented only `sqrt(2)` while the reported numbers used
-2.0) and is now stated in both places —
-[intervention_a.py:49](../recsys/intervention_a.py:49) and
-[intervention_a.py:109](../recsys/intervention_a.py:109).
+**None outstanding.** Both items this section carried were fixed rather than left reported. The
+repo `README.md` called these docs "seven Mermaid diagrams" when this file and
+`08-intervention-b-coldllm.md` made eight; it now says eight. And `DEFAULT_TEXT_WEIGHT`'s docstring
+documented only `sqrt(2)` while the reported numbers used 2.0 — both values are now stated in the
+module and the split is explained under
+[Two weights, both correct](#two-weights-both-correct--read-the-label), where it belongs as a
+convention rather than a defect.
 
 ## Open questions
 
-- **The warm-up curve is nearly flat for both hybrids** (~5–7% from `k=0` to `k=20`) while ALS's AUC
+- **The warm-up curve is nearly flat for both hybrids** (~5–8% from `k=0` to `k=20`) while ALS's AUC
   climbs 78% over the same sweep. `cbhcf.fold_in` explains why: *"the content term is entirely
   static"* — content contributes the same value at every `k`, so no improvement to the content
   representation can change the *shape* of the curve, only its height. An intervention that changes
   the shape has to reach the collaborative pathway.
-- **Whether `description` deserves more weight is unresolved.** The sweep says `w = 1.0` beats the
-  default 0.5, but that value was selected on `cold_val` and has not been carried into
-  `content.DEFAULT_WEIGHTS`, so the baseline still ships 0.5.
-- **Movies is encoded but unused.** `content.py`'s role indirection exists to support a Books →
-  Movies transfer run; the embeddings are keyed by `parent_asin` and split-independent, so that run
-  needs no GPU work. Nothing currently consumes them.
+
+  **Partially tested.** Intervention B does reach that pathway — its synthetic interactions enter
+  the collaborative side, not the content side — and the shape still did not move. CBHCF rises
+  +5.6% on HitRate@100 from `k=0` to `k=20` against Intervention B's +5.4%, and their AUC rises are
+  identical at +0.9% (`outputs/baseline_cf_20260815_012902.json`). Only height moved, and barely:
+  the largest gap at any level is 0.0007 on HitRate@100 at `k=3`, roughly 4x the across-seed std —
+  detectable, but nothing like a change in slope. This does not contradict the claim, which makes
+  reaching the collaborative pathway *necessary* for a shape change rather than sufficient. What it
+  shows is that reaching it is not enough at this volume: 19,089 synthetic interactions against
+  `ref_train`'s 2.67M is too little mass to move a curve either way. Whether an intervention that
+  reaches the pathway **at volume** changes the shape is the part that is still open.
+- **Whether the Books → Movies transfer run happens.** Movies is already encoded: `content.py`'s
+  role indirection exists for exactly this, and the embeddings are keyed by `parent_asin` and
+  split-independent, so the run needs no further GPU work
+  ([intervention_a.py:226](../recsys/intervention_a.py:226)). Nothing consumes them today. Whether
+  that experiment is in scope is a scoping decision, not something the source can answer.

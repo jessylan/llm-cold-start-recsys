@@ -48,7 +48,7 @@ flowchart TD
     CFV -->|"coef_a = 1.0 / s_cf"| ADD
     SCB -.-> ADD
     SCF -.-> ADD
-    LAM["outputs/hyperparams.json<br/>cbhcf.content_weight = 2.0<br/>chosen on dataset.cold_val under a<br/>warm-NDCG-within-2% constraint"] -->|"lambda"| ADD
+    LAM["outputs/hyperparams.json<br/>steel_thread_config.cbhcf<br/>content_weight = 3.0<br/>matched-budget sweep on dataset.cold_val<br/>under a warm-NDCG-within-2% guard"] -->|"lambda"| ADD
 
     ADD --> SRCS["cold_block_source / warm_source<br/>warm_auc_source / auc_pool_source"]
     MB --> MBS["mode_b_source<br/>AdditiveUserBlock(FactorUserBlock,<br/>DenseUserBlock)"]
@@ -84,24 +84,35 @@ flowchart TD
 
 ## Where lambda comes from
 
-`outputs/hyperparams.json` records `cbhcf.content_weight = 2.0`, and the selection rule is
-the least obvious thing in the repo — the recorded trace shows the *unconstrained* optimum
-was `lambda = 1e6` (pure content) and `constraint_was_binding: true`. So 2.0 was not chosen
-by maximizing the cold-start objective. It was chosen by maximizing it **subject to not
-degrading warm performance**:
+**Two lambdas live in `hyperparams.json`, and the steel thread runs the second one.** This is the
+single easiest thing to get wrong in this repo, so read the key before quoting a number:
 
-| Field in `hyperparams.json` | Value | Meaning |
+| Key | `content_weight` | Written by | Used by |
+|---|---|---|---|
+| `cbhcf` | **2.5** | `hyperparameter_tuning.ipynb` — lambda alone, at the default field weights | nothing, directly |
+| `steel_thread_config.cbhcf` | **3.0** | `intervention_a_weight_sweep.ipynb`, assembled by `recsys.steel_config.build` | `steel_thread.ipynb`, `intervention_b_coldllm.ipynb` |
+
+Every reported CBHCF number comes from **3.0**. `steel_config.load()` reads
+`steel_thread_config`; the `cbhcf` block is the standalone lambda tune and is superseded by the
+matched-budget sweep, which searches field weights *and* lambda for both arms on one shared grid so
+neither enters the steel thread with a tuning advantage. `steel_thread.ipynb` calls
+`steel_config.load` at cell 11 and falls back to `CBHCF_LAMBDA_FALLBACK = 1.0` if the file is
+missing.
+
+The selection rule behind the `cbhcf` block is still worth understanding, because the same
+warm-NDCG guard governs the sweep that supersedes it. 2.5 was not chosen by maximizing the
+cold-start objective; it was chosen by maximizing it **subject to not degrading warm performance**:
+
+| Field in `hyperparams.json["cbhcf"]` | Value | Meaning |
 |---|---|---|
 | `selected_on` | `cold_val (2,727 items)` | `dataset.cold_val` — the disjoint validation cold population, never the reported test set. |
 | objective | mean NDCG@100 over `k = [0, 2, 5, 10, 20]` + the within-item ceiling, 2 seeds | `K_LEVELS_TUNE`, `N_SEEDS_TUNE`, `CEILING_WEIGHT = 1.0` in the tuning notebook. |
-| `warm_reference` | 0.05445 | Best warm NDCG@100 on `ref_val` across the grid (at `lambda = 1.0`). |
-| `warm_tolerance` / `warm_floor` | 0.02 / 0.05336 | The constraint: warm NDCG must stay within 2% of the best in the grid. |
-| `unconstrained_best_lambda` | 1e6 | What the cold objective alone would have picked. |
-| `constraint_was_binding` | `true` | **The warm guard, not the cold objective, selected 2.0.** |
+| `grid` | 11 points | The lambda grid searched. |
+| `warm_reference` | 0.05441 | Best warm NDCG@100 on `ref_val` across the grid. |
+| `warm_tolerance` / `warm_floor` | 0.02 / 0.05332 | The constraint: warm NDCG must stay within 2% of the best in the grid. |
+| `unconstrained_best_lambda` | 8.0 | What the cold objective alone would have picked — content-heavy, but finite. |
+| `constraint_was_binding` | `true` | **The warm guard, not the cold objective, selected 2.5.** |
 | `dataset_fingerprint` | 10-tuple | Stamped so the artifact cannot be silently reused against a different split. |
-
-`steel_thread.ipynb` reads this file at cell 11 and falls back to
-`CBHCF_LAMBDA_FALLBACK = 1.0` if it is missing.
 
 ## Three scale tricks worth knowing before you edit
 

@@ -10,7 +10,7 @@ table row points at `file:line`. Read them in this order on your first afternoon
 | [03-adding-a-model.md](03-adding-a-model.md) | How do I add a new model? | You want a new retrieval method to appear on the warm-up curve. |
 | [04-cbhcf-score-composition.md](04-cbhcf-score-composition.md) | How does CBHCF combine ALS and content? | You are touching the hybrid, the content space, or lambda. |
 | [05-what-metrics-mean.md](05-what-metrics-mean.md) | What does this accuracy number mean? | You have a number and need to know what it measured against. |
-| [06-provider-equity.md](06-provider-equity.md) | Who gets exposure, and how do we turn it on? | You are touching `recsys/equity_metrics.py` or Section 9c. Built and gated; not yet run against Books. |
+| [06-provider-equity.md](06-provider-equity.md) | Who gets exposure, and how do we turn it on? | You are touching `recsys/equity_metrics.py` or Section 9c. Built, gated, and run against Books (2026-08-11, six arms). |
 | [07-intervention-a-embeddings.md](07-intervention-a-embeddings.md) | How does Intervention A replace TF-IDF with sentence embeddings? | You are touching `recsys/intervention_a.py`, `recsys/item_space.py`, or any of the four `intervention_a_*` notebooks. |
 | [08-intervention-b-coldllm.md](08-intervention-b-coldllm.md) | How does Intervention B generate synthetic interactions for cold items? | You are touching `recsys/coldllm.py` or the ColdLLM notebook, or comparing its two prompting strategies. |
 
@@ -45,6 +45,11 @@ Amazon-Books scale (487,790 items) and comparable across methods.
   defaults in [load.py:163](../recsys/load.py:163) and
   [load.py:378](../recsys/load.py:378) are repo-root-relative and will not resolve from a
   notebook. Every notebook passes its path explicitly; do the same.
+- **`bench_*` citations point at files that are not in the repo, and that is deliberate.**
+  They are development-time verification scripts run against a local GPU environment, not part
+  of the shipped pipeline, and were left out of the upload on purpose. A citation records what
+  was checked, not a broken path. See
+  [05](05-what-metrics-mean.md#design-decisions-on-record).
 - **`design_documents/initial_pipeline_design/` is a retired design record** describing the
   original MovieLens steel thread. It is not documentation of the current system.
   `notebooks/steel_thread.ipynb` — despite sharing the name — *is* the current baseline

@@ -23,17 +23,17 @@ It cleans and combines ratings, then creates standard and cold-start evaluation 
    - **From raw:** place the raw files at the `data/raw/...` paths listed under
      **Data and outputs**, then run step 3.
 3. Run `notebooks/data_filtering.ipynb`.  
-4. Run `notebooks/hyperparameter_tuning.ipynb`. Skippable — `outputs/hyperparams.json` is committed.
-5. **(Optional, GPU only)** Intervention A — sentence embeddings in place of TF-IDF for the
+4. Run `notebooks/hyperparameter_tuning.ipynb`. Skippable - `outputs/hyperparams.json` is committed.
+5. **(Optional, GPU only)** Intervention A - sentence embeddings in place of TF-IDF for the
    item's own prose. Run `notebooks/intervention_a_encoding.ipynb` **once** to build
    `data/embeddings/*.npz` (~12 GB, keyed by `parent_asin`, so it is split-independent);
    everything downstream reads those files and never touches a GPU encoder again. The three
-   selection notebooks — `intervention_a_model_selection`, `..._description_variants`,
-   `..._weight_sweep` — choose the encoder and field weights on the cold-item **validation**
+   selection notebooks - `intervention_a_model_selection`, `..._description_variants`,
+   `..._weight_sweep` - choose the encoder and field weights on the cold-item **validation**
    set, and write their results to `outputs/intervention_a_*.json`, which is committed. Skip
    them and `steel_thread.ipynb` uses the committed configuration.
    See [design_documents/07-intervention-a-embeddings.md](design_documents/07-intervention-a-embeddings.md).
-6. **(Optional, GPU only)** Intervention B — ColdLLM-style synthetic interactions for
+6. **(Optional, GPU only)** Intervention B - ColdLLM-style synthetic interactions for
    cold-start items. Run `notebooks/intervention_b_coldllm.ipynb`. It is self-contained: it
    computes its own CBHCF baseline and does not need step 7 to have run. Needs a CUDA GPU
    with `vllm` installed separately, and generation is a multi-hour job the first time
@@ -74,7 +74,7 @@ Dataset  (interaction matrix + warm / cold-val / cold-test splits, built in memo
 |   |-- 03-adding-a-model.md            # the RetrievalModel contract and its implementors
 |   |-- 04-cbhcf-score-composition.md   # ALS + content -> AdditiveItemBlock; where lambda comes from
 |   |-- 05-what-metrics-mean.md         # Mode A/B control flow, ceilings, floors, pools
-|   |-- 06-provider-equity.md           # equity_metrics.py as an integration spec (not yet wired in)
+|   |-- 06-provider-equity.md           # equity_metrics.py: provider exposure, wired into Section 9c and run
 |   |-- 07-intervention-a-embeddings.md # sentence embeddings in place of TF-IDF prose
 |   |-- 08-intervention-b-coldllm.md    # LLM-simulated interactions for cold items
 |   `-- initial_pipeline_design/        # RETIRED MovieLens steel thread; design record only
@@ -102,7 +102,7 @@ Dataset  (interaction matrix + warm / cold-val / cold-test splits, built in memo
 |   |-- scores.py                       # score sources: the interface `gpu_retrieval` consumes instead of factors
 |   |-- gpu_retrieval.py                # exact GPU top-K, candidate-pool AUC, and the Mode B duals
 |   |-- eval.py                         # evaluation harness: metrics, within-item ceiling, both warm-up sweeps
-|   |-- equity_metrics.py               # provider-side fairness metrics — Gini, catalog share, equity ratio
+|   |-- equity_metrics.py               # provider-side fairness metrics - Gini, catalog share, equity ratio
 |   `-- coldllm.py                      # Intervention B: ColdLLM-style synthetic interaction generation (vLLM, GPU-only)
 |-- .gitignore
 |-- README.md
@@ -161,8 +161,10 @@ can be checked against the code rather than trusted. Start at
 
 Docs 05 and 06 each end with a **Drift** section (places where prose contradicts the code,
 reported but not fixed) and an **Open questions** section (things not determinable from
-source). Read `06` before touching `recsys/equity_metrics.py` — it documents a blocking
-id-format mismatch that fails silently.
+source). Read `06` before touching `recsys/equity_metrics.py` - it records why the module is
+measured over the eval-user set rather than the full population, which is not obvious from the
+code and is what a naive widening would break. Its Drift section is now empty: the id-format
+mismatch it used to document was fixed rather than merely reported.
 
 ### initial_pipeline_design
 This folder contains:
@@ -184,3 +186,13 @@ It is preserved as a design record, not as current documentation.
 
 - The full dataset contains about 17 million interactions and requires substantial disk
   space and processing time.
+
+## Use of Generative AI
+
+Open-weight models are part of the method: Intervention A encodes item text with pretrained
+sentence-embedding models (`Snowflake/snowflake-arctic-embed-l-v2.0`), and Intervention B
+prompts a locally served LLM (`Qwen2.5-7B-Instruct-AWQ` via vLLM) zero-shot to generate
+synthetic interactions for cold-start items. Both run locally, unmodified - no fine-tuning
+and no third-party APIs. Separately, the team used AI coding assistants to help write code
+and documentation; all such output was reviewed and tested by a team member. No reported
+result was produced by an AI assistant - every number comes from running the committed code.
